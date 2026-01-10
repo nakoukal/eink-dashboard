@@ -50,7 +50,14 @@ def main():
         'uv': 3.0,
         'solar_radiation': 450.0,
         'feels_like': 21.8,
-        'timestamp': datetime.now()
+        'condition': 'partly-cloudy',  # Current weather condition
+        'timestamp': datetime.now(),
+        'forecast': [
+            {'day': 'Po', 'condition': 'sunny', 'temp_high': 24, 'temp_low': 12},
+            {'day': 'Út', 'condition': 'partly-cloudy', 'temp_high': 22, 'temp_low': 11},
+            {'day': 'St', 'condition': 'cloudy', 'temp_high': 18, 'temp_low': 9},
+            {'day': 'Čt', 'condition': 'pouring', 'temp_high': 15, 'temp_low': 8},
+        ]
     }
 
     # Generate mock temperature history

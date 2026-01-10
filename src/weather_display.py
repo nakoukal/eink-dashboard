@@ -313,8 +313,10 @@ class WeatherDisplayGenerator:
         if history_data:
             self._draw_temperature_graph(history_data)
 
-        self._draw_wind_rain(weather_data)
-        self._draw_footer(weather_data)
+        # Draw 4-day forecast
+        forecast = weather_data.get('forecast', [])
+        if forecast:
+            self._draw_forecast(forecast)
 
         return self.image
 
@@ -363,96 +365,189 @@ class WeatherDisplayGenerator:
         self.draw.line([(20, 65), (self.width - 20, 65)], fill=0, width=2)
 
     def _draw_temperature(self, data):
-        """Draw main temperature display"""
+        """Draw main temperature display with weather icon"""
         temp = data.get('temperature')
+        condition = data.get('condition', 'sunny')
+
         if temp is None:
-            temp_str = "-- °C"
+            temp_str = "--°C"
         else:
-            temp_str = f"{temp:.1f}°C"
+            temp_str = f"{temp:.0f}°C"
 
-        # Large temperature display
-        font_temp = self._get_font(100)
+        # Weather icon (large, same visual weight as temperature)
+        icon_size = 90
+        icon_x = 25
+        icon_y = 75
+        self._draw_icon(icon_x, icon_y, condition, icon_size)
 
-        # Calculate position (left side, centered vertically)
+        # Temperature next to icon - aligned with bottom of icon
+        font_temp = self._get_font(105)
+        temp_x = icon_x + icon_size + 5
+
+        # Calculate Y position to align bottom of text with bottom of icon
         bbox = self.draw.textbbox((0, 0), temp_str, font=font_temp)
-        temp_width = bbox[2] - bbox[0]
-        temp_height = bbox[3] - bbox[1]
+        text_height = bbox[3] - bbox[1]
+        icon_bottom = icon_y + icon_size
+        temp_y = icon_bottom - text_height - 5
 
-        x = 30
-        y = 120
+        self.draw.text((temp_x, temp_y), temp_str, font=font_temp, fill=0)
 
-        self.draw.text((x, y), temp_str, font=font_temp, fill=0)
+    def _load_icon(self, name, size=36):
+        """Load and prepare PNG icon for e-ink display"""
+        icon_paths = [
+            f"assets/icons/{name}.png",
+            f"../assets/icons/{name}.png",
+            os.path.join(os.path.dirname(__file__), f"../assets/icons/{name}.png"),
+        ]
 
-        # Draw "feels like" if available
-        feels_like = data.get('feels_like')
-        if feels_like:
-            font_small = self._get_font(18)
-            feels_str = f"Pocitově: {feels_like:.1f}°C"
-            self.draw.text((x, y + temp_height + 5), feels_str, font=font_small, fill=0)
+        for path in icon_paths:
+            try:
+                icon = Image.open(path).convert('RGBA')
+                icon = icon.resize((size, size), Image.Resampling.LANCZOS)
+
+                # Create white background
+                background = Image.new('1', (size, size), 255)
+
+                # Get alpha channel and icon data
+                for y in range(size):
+                    for x in range(size):
+                        r, g, b, a = icon.getpixel((x, y))
+                        if a > 128:  # If pixel is visible
+                            # Dark pixels become black
+                            if (r + g + b) / 3 < 128:
+                                background.putpixel((x, y), 0)
+
+                return background
+            except FileNotFoundError:
+                continue
+            except Exception as e:
+                print(f"Error loading icon {name}: {e}")
+                continue
+
+        return None
+
+    def _draw_icon(self, x, y, icon_name, size=36):
+        """Draw a PNG icon at specified position"""
+        icon = self._load_icon(icon_name, size)
+        if icon:
+            self.image.paste(icon, (x, y))
+            return True
+        return False
+
+    def _draw_wind_direction_icon(self, x, y, degrees, size=36):
+        """Draw wind direction arrow rotated by degrees"""
+        icon_paths = [
+            f"assets/icons/direction.png",
+            f"../assets/icons/direction.png",
+            os.path.join(os.path.dirname(__file__), f"../assets/icons/direction.png"),
+        ]
+
+        for path in icon_paths:
+            try:
+                icon = Image.open(path).convert('RGBA')
+                icon = icon.resize((size, size), Image.Resampling.LANCZOS)
+
+                # Rotate icon by wind direction
+                # Wind direction is "from" direction, arrow should point "to"
+                # So we rotate by degrees (0=N means wind from north, arrow points south)
+                rotated = icon.rotate(-degrees + 180, expand=False, fillcolor=(255, 255, 255, 0))
+
+                # Create white background for e-ink
+                background = Image.new('1', (size, size), 255)
+
+                for py in range(size):
+                    for px in range(size):
+                        r, g, b, a = rotated.getpixel((px, py))
+                        if a > 128 and (r + g + b) / 3 < 128:
+                            background.putpixel((px, py), 0)
+
+                self.image.paste(background, (x, y))
+                return True
+            except FileNotFoundError:
+                continue
+            except Exception as e:
+                print(f"Error loading direction icon: {e}")
+                continue
+
+        return False
 
     def _draw_metrics(self, data):
-        """Draw humidity, pressure, UV metrics"""
-        font_label = self._get_font(20)
-        font_value = self._get_font(36)
+        """Draw humidity, pressure, rain, wind metrics with icons"""
+        font_value = self._get_font(28)
         font_unit = self._get_font(18)
 
-        # Starting position (right side)
-        x_start = 480
-        y_start = 90
-        spacing = 90
+        # Starting position (right side - more to the right)
+        x_start = 530
+        y_start = 80
+        spacing = 55
+        icon_size = 32
 
-        # Humidity
+        # Humidity with icon
         humidity = data.get('humidity')
         if humidity is not None:
-            self.draw.text((x_start, y_start), "Vlhkost", font=font_label, fill=0)
-            self.draw.text((x_start, y_start + 25), f"{humidity:.0f}%", font=font_value, fill=0)
+            self._draw_icon(x_start, y_start, "humidity", icon_size)
+            self.draw.text((x_start + icon_size + 8, y_start + 2), f"{humidity:.0f}%", font=font_value, fill=0)
 
-        # Pressure
+        # Pressure with icon and unit
         pressure = data.get('pressure')
         if pressure is not None:
-            self.draw.text((x_start, y_start + spacing), "Tlak", font=font_label, fill=0)
-            pressure_str = f"{pressure:.1f} hPa"
-            self.draw.text((x_start, y_start + spacing + 25), pressure_str, font=font_value, fill=0)
+            self._draw_icon(x_start, y_start + spacing, "pressure", icon_size)
+            self.draw.text((x_start + icon_size + 8, y_start + spacing + 2), f"{pressure:.0f} hPa", font=font_value, fill=0)
 
-        # UV Index
-        uv = data.get('uv')
-        if uv is not None:
-            self.draw.text((x_start, y_start + spacing * 2), "UV Index", font=font_label, fill=0)
-            self.draw.text((x_start, y_start + spacing * 2 + 25), f"{uv:.1f}", font=font_value, fill=0)
+        # Rain with icon and unit
+        rain_daily = data.get('rain_daily')
+        if rain_daily is not None:
+            self._draw_icon(x_start, y_start + spacing * 2, "rain", icon_size)
+            self.draw.text((x_start + icon_size + 8, y_start + spacing * 2 + 2), f"{rain_daily:.1f} mm", font=font_value, fill=0)
+
+        # Wind with icon, speed, unit, direction arrow and text
+        wind_speed = data.get('wind_speed')
+        wind_dir = data.get('wind_direction')
+        if wind_speed is not None:
+            self._draw_icon(x_start, y_start + spacing * 3, "wind", icon_size)
+            # Wind speed with unit
+            wind_str = f"{wind_speed:.0f} km/h"
+            self.draw.text((x_start + icon_size + 8, y_start + spacing * 3 + 4), wind_str, font=font_value, fill=0)
+
+            # Wind direction: rotated arrow + text
+            if wind_dir is not None:
+                dir_text = self._get_wind_direction(wind_dir)
+                # Draw rotated direction arrow
+                arrow_x = x_start + icon_size + 115
+                self._draw_wind_direction_icon(arrow_x, y_start + spacing * 3, wind_dir, 28)
+                # Draw direction text next to arrow
+                self.draw.text((arrow_x + 32, y_start + spacing * 3 + 6), dir_text, font=font_unit, fill=0)
 
     def _draw_temperature_graph(self, history_data):
-        """Draw temperature history graph"""
+        """Draw temperature history as bar graph"""
         if not history_data or len(history_data) < 2:
             return
 
-        font_small = self._get_font(12)
-        font_label = self._get_font(14)
+        font_small = self._get_font(16)
+        font_label = self._get_font(18)
 
-        # Graph area dimensions
-        graph_x = 30
-        graph_y = 255
-        graph_width = 420
-        graph_height = 85
+        # Graph area dimensions - smaller to fit larger forecast below
+        graph_x = 25
+        graph_y = 195
+        graph_width = 440
+        graph_height = 105
 
         # Draw graph title
         self.draw.text((graph_x, graph_y - 18), "Teplota (24h)", font=font_label, fill=0)
 
+        # Get last 24 data points
+        data_points = history_data[-24:] if len(history_data) > 24 else history_data
+
         # Calculate min/max temperatures
-        temps = [d['temperature'] for d in history_data]
+        temps = [d['temperature'] for d in data_points]
         temp_min = min(temps)
         temp_max = max(temps)
         temp_range = max(temp_max - temp_min, 1)  # Avoid division by zero
 
         # Add padding to temp range
-        temp_min = temp_min - 1
-        temp_max = temp_max + 1
+        temp_min = temp_min - 2
+        temp_max = temp_max + 2
         temp_range = temp_max - temp_min
-
-        # Draw graph border (2px for e-ink visibility)
-        self.draw.rectangle(
-            [(graph_x, graph_y), (graph_x + graph_width, graph_y + graph_height)],
-            outline=0, width=2
-        )
 
         # Draw horizontal grid lines and temperature labels
         for i in range(3):
@@ -463,68 +558,116 @@ class WeatherDisplayGenerator:
                 self.draw.line([(x, y), (x + 4, y)], fill=0, width=1)
             # Temperature label on right
             temp_label = f"{temp_val:.0f}°"
-            bbox = self.draw.textbbox((0, 0), temp_label, font=font_small)
-            label_width = bbox[2] - bbox[0]
             self.draw.text((graph_x + graph_width + 5, y - 6), temp_label, font=font_small, fill=0)
 
-        # Draw temperature line
-        points = []
-        data_points = history_data[-24:] if len(history_data) > 24 else history_data
+        # Calculate bar dimensions
+        num_bars = len(data_points)
+        bar_spacing = 2
+        bar_width = max(2, (graph_width - 4) // num_bars - bar_spacing)
 
+        # Draw bars
         for i, data_point in enumerate(data_points):
-            x = graph_x + int((i / (len(data_points) - 1)) * graph_width)
             temp = data_point['temperature']
-            y = graph_y + graph_height - int(((temp - temp_min) / temp_range) * graph_height)
-            y = max(graph_y, min(graph_y + graph_height, y))  # Clamp to graph area
-            points.append((x, y))
 
-        # Draw the line (3px for e-ink visibility)
-        if len(points) >= 2:
-            self.draw.line(points, fill=0, width=3)
+            # Calculate bar height (from bottom of graph)
+            bar_height = int(((temp - temp_min) / temp_range) * (graph_height - 4))
+            bar_height = max(2, bar_height)  # Minimum bar height
 
-        # Draw data points (larger for e-ink visibility)
-        for x, y in points[::4]:  # Every 4th point to avoid clutter
-            self.draw.ellipse([(x-3, y-3), (x+3, y+3)], fill=0)
+            # Calculate bar position
+            x = graph_x + 2 + i * (bar_width + bar_spacing)
+            y_top = graph_y + graph_height - 2 - bar_height
+            y_bottom = graph_y + graph_height - 2
+
+            # Draw filled bar
+            self.draw.rectangle(
+                [(x, y_top), (x + bar_width, y_bottom)],
+                fill=0
+            )
 
         # Draw time labels (every 6 hours)
-        time_labels = []
-        for i in range(0, len(data_points), max(1, len(data_points) // 4)):
+        for i in range(0, num_bars, max(1, num_bars // 4)):
             if i < len(data_points):
-                time_labels.append((i, data_points[i].get('hour', '')))
+                hour_label = data_points[i].get('hour', '')
+                short_label = hour_label.split(':')[0] if ':' in hour_label else hour_label
+                x = graph_x + 2 + i * (bar_width + bar_spacing) + bar_width // 2
+                self.draw.text((x - 8, graph_y + graph_height + 3), short_label, font=font_small, fill=0)
 
-        for i, hour_label in time_labels:
-            x = graph_x + int((i / (len(data_points) - 1)) * graph_width)
-            # Only show hour (e.g., "06:00" -> "06")
-            short_label = hour_label.split(':')[0] if ':' in hour_label else hour_label
-            self.draw.text((x - 8, graph_y + graph_height + 3), short_label, font=font_small, fill=0)
+    def _draw_forecast(self, forecast):
+        """Draw 4-day weather forecast"""
+        if not forecast or len(forecast) == 0:
+            return
+
+        font_day = self._get_font(20)
+        font_temp = self._get_font(24)
+
+        # Forecast section position - larger
+        y_start = 350
+        icon_size = 55
+        section_width = self.width // 4
+
+        # Draw separator line
+        self.draw.line([(20, y_start - 12), (self.width - 20, y_start - 12)], fill=0, width=2)
+
+        # Draw up to 4 days
+        for i, day in enumerate(forecast[:4]):
+            x_center = section_width * i + section_width // 2
+
+            # Day name
+            day_name = day.get('day', '')
+            bbox = self.draw.textbbox((0, 0), day_name, font=font_day)
+            day_width = bbox[2] - bbox[0]
+            self.draw.text((x_center - day_width // 2, y_start), day_name, font=font_day, fill=0)
+
+            # Weather icon
+            condition = day.get('condition', 'sunny')
+            icon_x = x_center - icon_size // 2
+            icon_y = y_start + 16
+            self._draw_icon(icon_x, icon_y, condition, icon_size)
+
+            # Temperature (high/low) with °C
+            temp_high = day.get('temp_high')
+            temp_low = day.get('temp_low')
+
+            if temp_high is not None:
+                if temp_low is not None:
+                    temp_str = f"{temp_high:.0f}/{temp_low:.0f}°C"
+                else:
+                    temp_str = f"{temp_high:.0f}°C"
+
+                bbox = self.draw.textbbox((0, 0), temp_str, font=font_temp)
+                temp_width = bbox[2] - bbox[0]
+                self.draw.text((x_center - temp_width // 2, icon_y + icon_size + 2), temp_str, font=font_temp, fill=0)
 
     def _draw_wind_rain(self, data):
-        """Draw wind and rain information"""
-        font_label = self._get_font(18)
-        font_value = self._get_font(26)
+        """Draw wind and rain information with icons"""
+        font_value = self._get_font(28)
 
         y_pos = 380
+        icon_size = 36
 
         # Draw separator line
         self.draw.line([(20, y_pos - 15), (self.width - 20, y_pos - 15)], fill=0, width=2)
 
-        # Wind
+        # Wind with icon
         wind_speed = data.get('wind_speed')
         wind_dir = data.get('wind_direction')
 
         if wind_speed is not None:
-            self.draw.text((40, y_pos), "Vítr", font=font_label, fill=0)
-            wind_str = f"{wind_speed:.1f} km/h"
-            if wind_dir is not None:
-                direction = self._get_wind_direction(wind_dir)
-                wind_str += f" {direction}"
-            self.draw.text((40, y_pos + 25), wind_str, font=font_value, fill=0)
+            # Wind icon
+            self._draw_icon(30, y_pos, "wind", icon_size)
 
-        # Rain
+            # Wind speed
+            self.draw.text((30 + icon_size + 8, y_pos + 4), f"{wind_speed:.1f}", font=font_value, fill=0)
+
+            # Wind direction arrow (rotated)
+            if wind_dir is not None:
+                self._draw_wind_direction_icon(180, y_pos, wind_dir, icon_size)
+
+        # Rain with icon
         rain_daily = data.get('rain_daily')
         if rain_daily is not None:
-            self.draw.text((420, y_pos), "Srážky (dnes)", font=font_label, fill=0)
-            self.draw.text((420, y_pos + 25), f"{rain_daily:.1f} mm", font=font_value, fill=0)
+            self._draw_icon(420, y_pos, "rain", icon_size)
+            self.draw.text((420 + icon_size + 8, y_pos + 4), f"{rain_daily:.1f} mm", font=font_value, fill=0)
 
     def _draw_footer(self, data):
         """Draw footer with update time"""
