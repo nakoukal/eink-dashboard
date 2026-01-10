@@ -448,10 +448,10 @@ class WeatherDisplayGenerator:
         temp_max = temp_max + 1
         temp_range = temp_max - temp_min
 
-        # Draw graph border
+        # Draw graph border (2px for e-ink visibility)
         self.draw.rectangle(
             [(graph_x, graph_y), (graph_x + graph_width, graph_y + graph_height)],
-            outline=0, width=1
+            outline=0, width=2
         )
 
         # Draw horizontal grid lines and temperature labels
@@ -478,13 +478,13 @@ class WeatherDisplayGenerator:
             y = max(graph_y, min(graph_y + graph_height, y))  # Clamp to graph area
             points.append((x, y))
 
-        # Draw the line
+        # Draw the line (3px for e-ink visibility)
         if len(points) >= 2:
-            self.draw.line(points, fill=0, width=2)
+            self.draw.line(points, fill=0, width=3)
 
-        # Draw data points
+        # Draw data points (larger for e-ink visibility)
         for x, y in points[::4]:  # Every 4th point to avoid clutter
-            self.draw.ellipse([(x-2, y-2), (x+2, y+2)], fill=0)
+            self.draw.ellipse([(x-3, y-3), (x+3, y+3)], fill=0)
 
         # Draw time labels (every 6 hours)
         time_labels = []
