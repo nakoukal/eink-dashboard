@@ -1,0 +1,19 @@
+[Unit]
+Description=E-ink Weather Display Update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pi
+WorkingDirectory=/home/pi/claude-test/src
+ExecStart=/usr/bin/python3 /home/pi/claude-test/src/display_to_epaper.py
+StandardOutput=append:/home/pi/claude-test/data/systemd.log
+StandardError=append:/home/pi/claude-test/data/systemd.log
+
+# Restart policy
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target

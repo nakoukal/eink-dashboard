@@ -1,0 +1,11 @@
+# Core dependencies
+Pillow>=10.0.0
+requests>=2.31.0
+
+# Optional: Waveshare e-Paper library
+# Clone from: https://github.com/waveshare/e-Paper
+# Or install via: pip install waveshare-epd
+
+# For Raspberry Pi GPIO (only needed when deploying to Raspberry Pi)
+# RPi.GPIO>=0.7.1
+# spidev>=3.6

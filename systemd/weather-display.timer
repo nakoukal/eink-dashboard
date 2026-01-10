@@ -1,0 +1,12 @@
+[Unit]
+Description=E-ink Weather Display Update Timer
+Requires=weather-display.service
+
+[Timer]
+# Run every 5 minutes
+OnBootSec=1min
+OnUnitActiveSec=5min
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
