@@ -6,10 +6,33 @@ Use this to test the layout without needing actual weather station
 
 import sys
 import os
+import math
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
-from weather_display import WeatherDisplayGenerator
-from datetime import datetime
+from weather_display import WeatherDisplayGenerator, HomeAssistantAPI
+from datetime import datetime, timedelta
+
+
+def generate_mock_history(hours=24):
+    """Generate mock temperature history data"""
+    history = []
+    now = datetime.now()
+
+    for i in range(hours, -1, -1):
+        timestamp = now - timedelta(hours=i)
+        hour = timestamp.hour
+        # Simulate daily temperature curve: base 18°C, amplitude 8°C, peak at 14:00
+        temp = 18 + 8 * math.sin((hour - 6) * math.pi / 12)
+        # Add some realistic noise
+        temp += (hash(str(timestamp)) % 30 - 15) / 10
+
+        history.append({
+            'temperature': round(temp, 1),
+            'timestamp': timestamp,
+            'hour': timestamp.strftime('%H:00')
+        })
+
+    return history
 
 
 def main():
@@ -30,6 +53,9 @@ def main():
         'timestamp': datetime.now()
     }
 
+    # Generate mock temperature history
+    mock_history = generate_mock_history(hours=24)
+
     print("=" * 50)
     print("Testing Weather Display Layout")
     print("=" * 50)
@@ -38,10 +64,14 @@ def main():
         if key != 'timestamp':
             print(f"  {key}: {value}")
 
-    # Generate display
-    print("\nGenerating display image...")
+    print(f"\nMock history: {len(mock_history)} data points")
+    temps = [h['temperature'] for h in mock_history]
+    print(f"  Temperature range: {min(temps):.1f}°C - {max(temps):.1f}°C")
+
+    # Generate display with graph
+    print("\nGenerating display image with temperature graph...")
     generator = WeatherDisplayGenerator()
-    image = generator.create_display(mock_data)
+    image = generator.create_display(mock_data, mock_history)
 
     # Save image
     output_path = 'data/test_display.png'

@@ -9,7 +9,7 @@ import os
 import sys
 import json
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont
 import io
 
@@ -158,6 +158,137 @@ class EcowittAPI:
         }
 
 
+class HomeAssistantAPI:
+    """Handler for Home Assistant history data"""
+
+    def __init__(self, config):
+        self.config = config
+        ha_config = config.get('home_assistant', {})
+        self.base_url = ha_config.get('url', '').rstrip('/')
+        self.token = ha_config.get('token', '')
+        self.temp_entity = ha_config.get('temperature_entity', '')
+        self.enabled = bool(self.base_url and self.token and self.temp_entity)
+
+    def get_temperature_history(self, hours=24):
+        """Fetch temperature history from Home Assistant"""
+        if not self.enabled:
+            print("Home Assistant not configured, using mock history data")
+            return self._get_mock_history(hours)
+
+        try:
+            # Calculate start time
+            end_time = datetime.now()
+            start_time = end_time - timedelta(hours=hours)
+
+            # Format timestamps for HA API
+            start_str = start_time.strftime("%Y-%m-%dT%H:%M:%S")
+
+            url = f"{self.base_url}/api/history/period/{start_str}"
+            params = {
+                'filter_entity_id': self.temp_entity,
+                'minimal_response': 'true',
+                'no_attributes': 'true',
+            }
+            headers = {
+                'Authorization': f'Bearer {self.token}',
+                'Content-Type': 'application/json',
+            }
+
+            response = requests.get(url, params=params, headers=headers, timeout=15)
+            response.raise_for_status()
+
+            data = response.json()
+            return self._parse_history(data, hours)
+
+        except Exception as e:
+            print(f"Error fetching Home Assistant history: {e}")
+            return self._get_mock_history(hours)
+
+    def _parse_history(self, data, hours):
+        """Parse Home Assistant history response"""
+        history = []
+
+        if not data or len(data) == 0:
+            return self._get_mock_history(hours)
+
+        # HA returns list of lists, first list is our entity
+        entity_history = data[0] if data else []
+
+        for state in entity_history:
+            try:
+                temp = float(state.get('state', 0))
+                timestamp_str = state.get('last_changed', '')
+                # Parse ISO format timestamp
+                if timestamp_str:
+                    # Handle various timestamp formats from HA
+                    timestamp_str = timestamp_str.replace('Z', '+00:00')
+                    if '.' in timestamp_str:
+                        timestamp = datetime.fromisoformat(timestamp_str.split('+')[0])
+                    else:
+                        timestamp = datetime.fromisoformat(timestamp_str.split('+')[0])
+                else:
+                    timestamp = datetime.now()
+
+                history.append({
+                    'temperature': temp,
+                    'timestamp': timestamp
+                })
+            except (ValueError, TypeError):
+                continue
+
+        # Sort by timestamp
+        history.sort(key=lambda x: x['timestamp'])
+
+        # Resample to hourly data points for cleaner graph
+        return self._resample_hourly(history, hours)
+
+    def _resample_hourly(self, history, hours):
+        """Resample data to hourly intervals"""
+        if not history:
+            return self._get_mock_history(hours)
+
+        resampled = []
+        now = datetime.now()
+
+        for i in range(hours, -1, -1):
+            target_time = now - timedelta(hours=i)
+            # Find closest data point
+            closest = min(history,
+                         key=lambda x: abs((x['timestamp'] - target_time).total_seconds()),
+                         default=None)
+            if closest:
+                resampled.append({
+                    'temperature': closest['temperature'],
+                    'timestamp': target_time,
+                    'hour': target_time.strftime('%H:00')
+                })
+
+        return resampled
+
+    def _get_mock_history(self, hours=24):
+        """Return mock temperature history for testing"""
+        import math
+        history = []
+        now = datetime.now()
+
+        for i in range(hours, -1, -1):
+            timestamp = now - timedelta(hours=i)
+            # Simulate daily temperature curve
+            hour = timestamp.hour
+            # Base temp 18°C, amplitude 8°C, peak at 14:00
+            temp = 18 + 8 * math.sin((hour - 6) * math.pi / 12)
+            # Add some noise
+            temp += (hash(str(timestamp)) % 30 - 15) / 10
+
+            history.append({
+                'temperature': round(temp, 1),
+                'timestamp': timestamp,
+                'hour': timestamp.strftime('%H:00')
+            })
+
+        return history
+
+
 class WeatherDisplayGenerator:
     """Generate e-ink display image for weather data"""
 
@@ -167,7 +298,7 @@ class WeatherDisplayGenerator:
         self.image = None
         self.draw = None
 
-    def create_display(self, weather_data):
+    def create_display(self, weather_data, history_data=None):
         """Create weather display image"""
         # Create white background (e-ink displays use white as background)
         self.image = Image.new('1', (self.width, self.height), 255)
@@ -177,6 +308,11 @@ class WeatherDisplayGenerator:
         self._draw_header(weather_data)
         self._draw_temperature(weather_data)
         self._draw_metrics(weather_data)
+
+        # Draw temperature graph if history data available
+        if history_data:
+            self._draw_temperature_graph(history_data)
+
         self._draw_wind_rain(weather_data)
         self._draw_footer(weather_data)
 
@@ -284,12 +420,90 @@ class WeatherDisplayGenerator:
             self.draw.text((x_start, y_start + spacing * 2), "UV Index", font=font_label, fill=0)
             self.draw.text((x_start, y_start + spacing * 2 + 25), f"{uv:.1f}", font=font_value, fill=0)
 
+    def _draw_temperature_graph(self, history_data):
+        """Draw temperature history graph"""
+        if not history_data or len(history_data) < 2:
+            return
+
+        font_small = self._get_font(12)
+        font_label = self._get_font(14)
+
+        # Graph area dimensions
+        graph_x = 30
+        graph_y = 255
+        graph_width = 420
+        graph_height = 85
+
+        # Draw graph title
+        self.draw.text((graph_x, graph_y - 18), "Teplota (24h)", font=font_label, fill=0)
+
+        # Calculate min/max temperatures
+        temps = [d['temperature'] for d in history_data]
+        temp_min = min(temps)
+        temp_max = max(temps)
+        temp_range = max(temp_max - temp_min, 1)  # Avoid division by zero
+
+        # Add padding to temp range
+        temp_min = temp_min - 1
+        temp_max = temp_max + 1
+        temp_range = temp_max - temp_min
+
+        # Draw graph border
+        self.draw.rectangle(
+            [(graph_x, graph_y), (graph_x + graph_width, graph_y + graph_height)],
+            outline=0, width=1
+        )
+
+        # Draw horizontal grid lines and temperature labels
+        for i in range(3):
+            y = graph_y + int(graph_height * i / 2)
+            temp_val = temp_max - (temp_range * i / 2)
+            # Grid line (dashed effect with short segments)
+            for x in range(graph_x + 1, graph_x + graph_width, 8):
+                self.draw.line([(x, y), (x + 4, y)], fill=0, width=1)
+            # Temperature label on right
+            temp_label = f"{temp_val:.0f}°"
+            bbox = self.draw.textbbox((0, 0), temp_label, font=font_small)
+            label_width = bbox[2] - bbox[0]
+            self.draw.text((graph_x + graph_width + 5, y - 6), temp_label, font=font_small, fill=0)
+
+        # Draw temperature line
+        points = []
+        data_points = history_data[-24:] if len(history_data) > 24 else history_data
+
+        for i, data_point in enumerate(data_points):
+            x = graph_x + int((i / (len(data_points) - 1)) * graph_width)
+            temp = data_point['temperature']
+            y = graph_y + graph_height - int(((temp - temp_min) / temp_range) * graph_height)
+            y = max(graph_y, min(graph_y + graph_height, y))  # Clamp to graph area
+            points.append((x, y))
+
+        # Draw the line
+        if len(points) >= 2:
+            self.draw.line(points, fill=0, width=2)
+
+        # Draw data points
+        for x, y in points[::4]:  # Every 4th point to avoid clutter
+            self.draw.ellipse([(x-2, y-2), (x+2, y+2)], fill=0)
+
+        # Draw time labels (every 6 hours)
+        time_labels = []
+        for i in range(0, len(data_points), max(1, len(data_points) // 4)):
+            if i < len(data_points):
+                time_labels.append((i, data_points[i].get('hour', '')))
+
+        for i, hour_label in time_labels:
+            x = graph_x + int((i / (len(data_points) - 1)) * graph_width)
+            # Only show hour (e.g., "06:00" -> "06")
+            short_label = hour_label.split(':')[0] if ':' in hour_label else hour_label
+            self.draw.text((x - 8, graph_y + graph_height + 3), short_label, font=font_small, fill=0)
+
     def _draw_wind_rain(self, data):
         """Draw wind and rain information"""
         font_label = self._get_font(18)
         font_value = self._get_font(26)
 
-        y_pos = 360
+        y_pos = 380
 
         # Draw separator line
         self.draw.line([(20, y_pos - 15), (self.width - 20, y_pos - 15)], fill=0, width=2)
@@ -371,10 +585,16 @@ def main():
     print(f"  Humidity: {weather_data.get('humidity')}%")
     print(f"  Pressure: {weather_data.get('pressure')} hPa")
 
+    # Get temperature history from Home Assistant
+    print("Fetching temperature history...")
+    ha = HomeAssistantAPI(config)
+    history_data = ha.get_temperature_history(hours=24)
+    print(f"  History points: {len(history_data)}")
+
     # Generate display image
     print("Generating display image...")
     generator = WeatherDisplayGenerator()
-    image = generator.create_display(weather_data)
+    image = generator.create_display(weather_data, history_data)
 
     # Save image
     output_path = 'data/weather_display.png'
