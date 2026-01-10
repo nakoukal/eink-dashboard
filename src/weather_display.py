@@ -223,34 +223,35 @@ class WeatherDisplayGenerator:
             temp_str = f"{temp:.1f}°C"
 
         # Large temperature display
-        font_temp = self._get_font(120)
+        font_temp = self._get_font(100)
 
         # Calculate position (left side, centered vertically)
         bbox = self.draw.textbbox((0, 0), temp_str, font=font_temp)
         temp_width = bbox[2] - bbox[0]
         temp_height = bbox[3] - bbox[1]
 
-        x = 50
-        y = 100 + (200 - temp_height) // 2
+        x = 30
+        y = 120
 
         self.draw.text((x, y), temp_str, font=font_temp, fill=0)
 
         # Draw "feels like" if available
         feels_like = data.get('feels_like')
         if feels_like:
-            font_small = self._get_font(20)
+            font_small = self._get_font(18)
             feels_str = f"Pocitově: {feels_like:.1f}°C"
-            self.draw.text((x, y + temp_height + 10), feels_str, font=font_small, fill=0)
+            self.draw.text((x, y + temp_height + 5), feels_str, font=font_small, fill=0)
 
     def _draw_metrics(self, data):
         """Draw humidity, pressure, UV metrics"""
         font_label = self._get_font(20)
         font_value = self._get_font(36)
+        font_unit = self._get_font(18)
 
         # Starting position (right side)
-        x_start = 450
-        y_start = 100
-        spacing = 85
+        x_start = 480
+        y_start = 90
+        spacing = 90
 
         # Humidity
         humidity = data.get('humidity')
@@ -262,8 +263,8 @@ class WeatherDisplayGenerator:
         pressure = data.get('pressure')
         if pressure is not None:
             self.draw.text((x_start, y_start + spacing), "Tlak", font=font_label, fill=0)
-            self.draw.text((x_start, y_start + spacing + 25), f"{pressure:.1f}", font=font_value, fill=0)
-            self.draw.text((x_start + 100, y_start + spacing + 40), "hPa", font=font_label, fill=0)
+            pressure_str = f"{pressure:.1f} hPa"
+            self.draw.text((x_start, y_start + spacing + 25), pressure_str, font=font_value, fill=0)
 
         # UV Index
         uv = data.get('uv')
@@ -274,30 +275,30 @@ class WeatherDisplayGenerator:
     def _draw_wind_rain(self, data):
         """Draw wind and rain information"""
         font_label = self._get_font(18)
-        font_value = self._get_font(28)
+        font_value = self._get_font(26)
 
-        y_pos = 350
+        y_pos = 360
 
         # Draw separator line
-        self.draw.line([(20, y_pos - 10), (self.width - 20, y_pos - 10)], fill=0, width=1)
+        self.draw.line([(20, y_pos - 15), (self.width - 20, y_pos - 15)], fill=0, width=2)
 
         # Wind
         wind_speed = data.get('wind_speed')
         wind_dir = data.get('wind_direction')
 
         if wind_speed is not None:
-            self.draw.text((50, y_pos), "Vítr", font=font_label, fill=0)
+            self.draw.text((40, y_pos), "Vítr", font=font_label, fill=0)
             wind_str = f"{wind_speed:.1f} km/h"
             if wind_dir is not None:
                 direction = self._get_wind_direction(wind_dir)
                 wind_str += f" {direction}"
-            self.draw.text((50, y_pos + 25), wind_str, font=font_value, fill=0)
+            self.draw.text((40, y_pos + 25), wind_str, font=font_value, fill=0)
 
         # Rain
         rain_daily = data.get('rain_daily')
         if rain_daily is not None:
-            self.draw.text((400, y_pos), "Srážky (dnes)", font=font_label, fill=0)
-            self.draw.text((400, y_pos + 25), f"{rain_daily:.1f} mm", font=font_value, fill=0)
+            self.draw.text((420, y_pos), "Srážky (dnes)", font=font_label, fill=0)
+            self.draw.text((420, y_pos + 25), f"{rain_daily:.1f} mm", font=font_value, fill=0)
 
     def _draw_footer(self, data):
         """Draw footer with update time"""
