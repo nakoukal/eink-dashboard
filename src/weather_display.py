@@ -183,14 +183,26 @@ class WeatherDisplayGenerator:
         return self.image
 
     def _get_font(self, size):
-        """Get font with fallback"""
-        try:
-            return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size)
-        except:
+        """Get font with fallback for Linux, macOS, and Windows"""
+        font_paths = [
+            # Linux (Raspberry Pi)
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            # macOS
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/System/Library/Fonts/SFNSText.ttf",
+            "/Library/Fonts/Arial.ttf",
+            # Windows
+            "C:/Windows/Fonts/arial.ttf",
+        ]
+
+        for font_path in font_paths:
             try:
-                return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", size)
-            except:
-                return ImageFont.load_default()
+                return ImageFont.truetype(font_path, size)
+            except (OSError, IOError):
+                continue
+
+        return ImageFont.load_default()
 
     def _draw_header(self, data):
         """Draw header with date and time"""
