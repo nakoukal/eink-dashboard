@@ -1,24 +1,39 @@
 {
-  "comment": "Configuration for Ecowitt GW2000A Weather Station",
-
-  "use_local_api": true,
-
-  "local_ip": "192.168.1.100",
-
-  "api_key": "YOUR_ECOWITT_API_KEY",
-  "application_key": "YOUR_ECOWITT_APPLICATION_KEY",
-  "mac_address": "YOUR_STATION_MAC_ADDRESS",
+  "comment": "Configuration for Ecowitt GW2000A Weather Station via Home Assistant",
 
   "home_assistant": {
-    "url": "http://homeassistant.local:8123",
-    "token": "YOUR_LONG_LIVED_ACCESS_TOKEN",
-    "temperature_entity": "sensor.outdoor_temperature"
+    "url": "http://YOUR_HOME_ASSISTANT_IP:8123",
+    "token": "YOUR_LONG_LIVED_ACCESS_TOKEN_HERE",
+
+    "entities": {
+      "temperature": "sensor.gw2000a_outdoor_temperature",
+      "humidity": "sensor.gw2000a_humidity",
+      "pressure": "sensor.gw2000a_relative_pressure",
+      "wind_speed": "sensor.gw2000a_wind_speed",
+      "wind_gust": "sensor.gw2000a_wind_gust",
+      "wind_direction": "sensor.gw2000a_wind_direction",
+      "rain_rate": "sensor.gw2000a_rain_rate_piezo",
+      "rain_daily": "sensor.gw2000a_daily_rain_piezo",
+      "rain_state": "binary_sensor.gw2000a_rain_state_piezo",
+      "uv_index": "sensor.gw2000a_uv_index",
+      "solar_radiation": "sensor.gw2000a_solar_radiation",
+      "feels_like": "sensor.gw2000a_feels_like_temperature",
+      "dewpoint": "sensor.gw2000a_dewpoint",
+      "forecast": "weather.home"
+    },
+
+    "forecast": {
+      "comment": "Forecast is obtained via service call weather.get_forecasts with return_response=true",
+      "type": "daily",
+      "days": 3
+    }
   },
 
   "display": {
     "width": 800,
     "height": 480,
-    "update_interval": 300
+    "update_interval": 300,
+    "rotation": 0
   },
 
   "units": {
@@ -26,5 +41,11 @@
     "wind_speed": "kmh",
     "pressure": "hpa",
     "rainfall": "mm"
+  },
+
+  "layout": {
+    "show_indoor": false,
+    "show_forecast": true,
+    "forecast_days": 3
   }
 }
