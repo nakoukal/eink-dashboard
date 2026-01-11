@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Electricity Spot Price Display Generator for Waveshare 7.5" e-Paper v2
-Generates electricity spot price display from Home Assistant sensor
+Electricity Spot Price Display Generator for Waveshare 7.5" e-Paper v2 (Hourly Version)
+Generates electricity spot price display from Home Assistant sensor with hourly averages
 Display resolution: 800x480 pixels (landscape)
 """
 
@@ -185,6 +185,34 @@ class ElectricityDisplayGenerator:
         self.image = None
         self.draw = None
 
+    def _aggregate_to_hourly(self, prices):
+        """Aggregate 15-minute price data to hourly averages"""
+        if not prices:
+            return []
+
+        hourly_data = {}
+
+        for price_entry in prices:
+            timestamp = price_entry['timestamp']
+            # Create hour key (timestamp at the start of the hour)
+            hour_start = timestamp.replace(minute=0, second=0, microsecond=0)
+
+            if hour_start not in hourly_data:
+                hourly_data[hour_start] = []
+
+            hourly_data[hour_start].append(price_entry['price'])
+
+        # Calculate averages
+        hourly_prices = []
+        for hour_start in sorted(hourly_data.keys()):
+            avg_price = sum(hourly_data[hour_start]) / len(hourly_data[hour_start])
+            hourly_prices.append({
+                'timestamp': hour_start,
+                'price': avg_price
+            })
+
+        return hourly_prices
+
     def create_display(self, spot_data, deferrable0_time=None, deferrable1_time=None):
         """Create electricity price display image"""
         # Create white background
@@ -224,7 +252,7 @@ class ElectricityDisplayGenerator:
         return self.image
 
     def _find_current_slot(self, prices):
-        """Find the price slot for current time"""
+        """Find the price slot for current time (hourly version)"""
         if not prices:
             return None
 
@@ -235,11 +263,11 @@ class ElectricityDisplayGenerator:
             local_tz = prices[0]['timestamp'].tzinfo
             now = datetime.now(local_tz)
 
-        # Find the slot that contains current time
+        # Find the slot that contains current time (hourly)
         for price_entry in prices:
             timestamp = price_entry['timestamp']
-            # Check if current time is within this 15-minute slot
-            if timestamp <= now < timestamp + timedelta(minutes=15):
+            # Check if current time is within this hour
+            if timestamp <= now < timestamp + timedelta(hours=1):
                 return price_entry
         return None
 
@@ -311,7 +339,7 @@ class ElectricityDisplayGenerator:
         # Chart area - adjusted to make room for info panels on right
         chart_x = 30  # Moved right for better centering (was 10)
         chart_y = 135  # Below current price
-        chart_width = self.width - 200  # Reduced to make space for right panel (was width - 80)
+        chart_width = self.width - 200  # Reduced to make space for 3 info boxes (was width - 80)
         chart_height = 225  # Increased height
 
         # Get current time for filtering
@@ -334,23 +362,25 @@ class ElectricityDisplayGenerator:
 
         end_time = start_time + timedelta(hours=24)
 
-        # Filter prices for the next 24 hours (96 intervals of 15 minutes)
-        all_prices = [p for p in prices if start_time <= p['timestamp'] < end_time]
+        # Filter prices for the next 24 hours
+        filtered_prices = [p for p in prices if start_time <= p['timestamp'] < end_time]
+
+        if not filtered_prices:
+            return
+
+        # Aggregate to hourly averages
+        all_prices = self._aggregate_to_hourly(filtered_prices)
 
         if not all_prices:
             return
 
-        # Calculate price range - intelligently include 0
+        # Calculate price range - always start from 0
         price_values = [p['price'] for p in all_prices]
         data_min_price = min(price_values)
         data_max_price = max(price_values)
 
-        # Include 0 only if minimum price is below 2 Kč
-        if data_min_price < 2.0:
-            min_price = min(0, data_min_price)
-        else:
-            min_price = data_min_price
-
+        # Always start from 0
+        min_price = 0
         max_price = data_max_price
 
         # Add 10% padding to top only
@@ -360,12 +390,12 @@ class ElectricityDisplayGenerator:
 
         # Calculate bar dimensions with spacing
         num_bars = len(all_prices)
-        bar_spacing = 2  # 2px gap between bars
+        bar_spacing = 3  # 3px gap between bars (increased from 2px)
         bar_width = max(1, (chart_width - (num_bars - 1) * bar_spacing) // num_bars)
         # Total width needed
         total_needed = num_bars * bar_width + (num_bars - 1) * bar_spacing
 
-        # Find current bar index (exact 15-min match)
+        # Find current bar index (exact hour match)
         current_bar_idx = None
         if current_slot:
             for idx, p in enumerate(all_prices):
@@ -387,8 +417,8 @@ class ElectricityDisplayGenerator:
         bottom_y = chart_y + chart_height - 2
         self.draw.line([(20, bottom_y), (self.width - 20, bottom_y)], fill=0, width=2)
 
-        # Draw bars (all 15-minute intervals for next 24 hours)
-        # Part above average will be dotted, part below will be solid
+        # Draw bars (hourly intervals for next 24 hours)
+        # Part below average: filled, part above average: outline only
         for i, price_entry in enumerate(all_prices):
             price = price_entry['price']
             timestamp = price_entry['timestamp']
@@ -409,79 +439,75 @@ class ElectricityDisplayGenerator:
             # Check if bar crosses average line
             if y_top < avg_y < y_bottom:
                 # Bar crosses average - split into two parts
-                # Bottom part (below average): solid
+                # Bottom part (below average): filled solid
                 self.draw.rectangle(
                     [(x, avg_y), (x + bar_width, y_bottom)],
                     fill=0
                 )
-                # Top part (above average): dotted pattern (2x2 dots)
-                for py in range(y_top, avg_y, 2):
-                    for px in range(x, x + bar_width, 2):
-                        if ((px // 2) + (py // 2)) % 2 == 0:  # 2x2 checkerboard
-                            self.draw.rectangle([(px, py), (min(px + 1, x + bar_width - 1), min(py + 1, avg_y - 1))], fill=0)
+                # Top part (above average): outline only (2px border)
+                # Draw outline rectangle
+                self.draw.rectangle(
+                    [(x, y_top), (x + bar_width, avg_y)],
+                    outline=0, fill=255, width=2
+                )
             elif y_bottom <= avg_y:
-                # Entire bar is above average - dotted (2x2 dots)
-                for py in range(y_top, y_bottom, 2):
-                    for px in range(x, x + bar_width, 2):
-                        if ((px // 2) + (py // 2)) % 2 == 0:  # 2x2 checkerboard
-                            self.draw.rectangle([(px, py), (min(px + 1, x + bar_width - 1), min(py + 1, y_bottom - 1))], fill=0)
+                # Entire bar is above average - outline only (2px border)
+                self.draw.rectangle(
+                    [(x, y_top), (x + bar_width, y_bottom)],
+                    outline=0, fill=255, width=2
+                )
             else:
-                # Entire bar is below average - solid
+                # Entire bar is below average - filled solid
                 self.draw.rectangle(
                     [(x, y_top), (x + bar_width, y_bottom)],
                     fill=0
                 )
 
-        # Draw hourly tick marks and labels
+        # Draw tick marks and labels for hourly bars
         # Show label every 3 hours
-        hours_to_label = []
-        hour_count = 0
+        font_tiny = self._get_font(14)
 
         for i, price_entry in enumerate(all_prices):
             timestamp = price_entry['timestamp']
             hour = timestamp.hour
-            minute = timestamp.minute
+            is_current = (i == current_bar_idx)
 
-            # Every hour at minute 0 gets a tick mark
-            if minute == 0:
-                # Label every 3rd hour
-                if hour_count % 3 == 0:
-                    hours_to_label.append((i, hour))
-                hour_count += 1
-
-        # Use regular font for labels (every 3 hours)
-        font_tiny = self._get_font(14)
-
-        # Draw tick marks for every hour
-        for i, price_entry in enumerate(all_prices):
-            timestamp = price_entry['timestamp']
-            minute = timestamp.minute
-
-            if minute == 0:
-                # Calculate center of this bar
-                bar_center_x = chart_x + i * (bar_width + bar_spacing) + bar_width // 2
-
-                # Draw small tick mark (5px high)
-                tick_top = chart_y + chart_height + 2
-                tick_bottom = tick_top + 5
-                self.draw.line([(bar_center_x, tick_top), (bar_center_x, tick_bottom)], fill=0, width=1)
-
-        # Draw labels for every 3rd hour
-        for idx, hour in hours_to_label:
             # Calculate center of this bar
-            bar_center_x = chart_x + idx * (bar_width + bar_spacing) + bar_width // 2
+            bar_center_x = chart_x + i * (bar_width + bar_spacing) + bar_width // 2
 
-            # Draw label below tick mark
-            label = f"{hour}"
-            bbox = self.draw.textbbox((0, 0), label, font=font_tiny)
-            text_width = bbox[2] - bbox[0]
-            text_x = bar_center_x - text_width // 2
+            # Draw small tick mark for every hour (5px high)
+            tick_top = chart_y + chart_height + 2
+            tick_bottom = tick_top + 5
+            self.draw.line([(bar_center_x, tick_top), (bar_center_x, tick_bottom)], fill=0, width=1)
 
-            self.draw.text((text_x, chart_y + chart_height + 8), label, font=font_tiny, fill=0)
+            # Draw triangle indicator for current hour
+            if is_current:
+                triangle_top = chart_y + chart_height - 5
+                triangle_size = 8
+                triangle_points = [
+                    (bar_center_x, triangle_top),  # Top point
+                    (bar_center_x - triangle_size, triangle_top + triangle_size),  # Bottom left
+                    (bar_center_x + triangle_size, triangle_top + triangle_size)   # Bottom right
+                ]
+                self.draw.polygon(triangle_points, fill=0)
+
+            # Label every 3rd hour
+            if i % 3 == 0:
+                label = f"{hour}"
+                bbox = self.draw.textbbox((0, 0), label, font=font_tiny)
+                text_width = bbox[2] - bbox[0]
+                text_x = bar_center_x - text_width // 2
+                self.draw.text((text_x, chart_y + chart_height + 8), label, font=font_tiny, fill=0)
 
     def _draw_statistics(self, prices, currency):
         """Draw price statistics (min, avg, max) with vertical separators"""
         if not prices:
+            return
+
+        # Aggregate to hourly averages for statistics
+        hourly_prices = self._aggregate_to_hourly(prices)
+
+        if not hourly_prices:
             return
 
         font_label = self._get_font(16)
@@ -489,28 +515,26 @@ class ElectricityDisplayGenerator:
         font_time = self._get_font(12)
 
         # Calculate statistics
-        price_values = [p['price'] for p in prices]
+        price_values = [p['price'] for p in hourly_prices]
         min_price = min(price_values)
         max_price = max(price_values)
         avg_price = sum(price_values) / len(price_values)
 
         # Find time slots for min and max
-        min_entry = min(prices, key=lambda x: x['price'])
-        max_entry = max(prices, key=lambda x: x['price'])
+        min_entry = min(hourly_prices, key=lambda x: x['price'])
+        max_entry = max(hourly_prices, key=lambda x: x['price'])
 
         min_time = min_entry['timestamp']
         max_time = max_entry['timestamp']
 
-        # Format time ranges as 15-minute intervals
+        # Format time ranges as hourly intervals
         min_hour = min_time.hour
-        min_minute = min_time.minute
-        min_end_minute = min_minute + 15
+        min_end_hour = (min_hour + 1) % 24
         max_hour = max_time.hour
-        max_minute = max_time.minute
-        max_end_minute = max_minute + 15
+        max_end_hour = (max_hour + 1) % 24
 
-        min_time_str = f"{min_hour:02d}:{min_minute:02d} - {min_hour:02d}:{min_end_minute:02d}"
-        max_time_str = f"{max_hour:02d}:{max_minute:02d} - {max_hour:02d}:{max_end_minute:02d}"
+        min_time_str = f"{min_hour:02d}:00 - {min_end_hour:02d}:00"
+        max_time_str = f"{max_hour:02d}:00 - {max_end_hour:02d}:00"
 
         # Draw statistics in a row at the bottom (adjusted for larger chart)
         # Chart ends at Y=360, time labels at Y=365-379, so start stats labels at Y=390
@@ -520,7 +544,8 @@ class ElectricityDisplayGenerator:
         curr_symbol = currency.split('/')[0]
 
         # Calculate available width for statistics (exclude right panel)
-        stats_width = self.width - 180  # Leave space for right panel (160px + margins)
+        # Right panel: 140px width + 20px margin = 160px
+        stats_width = self.width - 180  # Leave space for right panel
 
         # Divide available width into 3 sections
         section_width = stats_width // 3
@@ -612,38 +637,36 @@ class ElectricityDisplayGenerator:
         font_label = self._get_font(14)
         font_value = self._get_font(20)
         font_time = self._get_font(24)
-        font_section = self._get_font(24)  # Larger font for times
 
         # Draw entire black rectangle extending to right, top, and bottom edges
+        # Goes from (640, 0) to (800, 393) - full right side
         self.draw.rectangle([(panel_x, panel_y_start), (self.width, panel_y_end)], fill=0, outline=0)
 
         # Divide into 4 equal sections
         section_height = panel_height // 4
 
-        # Section 1: Time (current time)
+        # Get current time and date
+        now = datetime.now()
+        day_names = ['Po', 'Út', 'St', 'Čt', 'Pá', 'So', 'Ne']
+
+        # Section 1: Time
         section1_y = panel_y_start
-        current_time = datetime.now()
-        time_str = current_time.strftime('%H:%M')
-        bbox = self.draw.textbbox((0, 0), time_str, font=font_section)
+        time_str = now.strftime("%H:%M")
+        bbox = self.draw.textbbox((0, 0), time_str, font=font_time)
         text_width = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
         text_x = panel_x + (panel_width - text_width) // 2
         text_y = section1_y + (section_height - text_height) // 2
-        self.draw.text((text_x, text_y), time_str, font=font_section, fill=255)
+        self.draw.text((text_x, text_y), time_str, font=font_time, fill=255)
 
-        # Draw horizontal separator line after section 1
-        sep_y = section1_y + section_height
-        self.draw.line([(panel_x + 10, sep_y), (panel_x + panel_width - 10, sep_y)], fill=255, width=2)
+        # Draw horizontal divider line
+        divider1_y = section1_y + section_height
+        self.draw.line([(panel_x + 10, divider1_y), (panel_x + panel_width - 10, divider1_y)], fill=255, width=2)
 
         # Section 2: Date
-        section2_y = section1_y + section_height
-        # Format: "leden 11"
-        months_cz = ['leden', 'únor', 'březen', 'duben', 'květen', 'červen',
-                     'červenec', 'srpen', 'září', 'říjen', 'listopad', 'prosinec']
-        month_name = months_cz[current_time.month - 1]
-        day_num = current_time.day
-        date_str = f"{month_name} {day_num}"
-
+        section2_y = divider1_y
+        day_name = day_names[now.weekday()]
+        date_str = f"{day_name} {now.day}/{now.month}"
         bbox = self.draw.textbbox((0, 0), date_str, font=font_value)
         text_width = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
@@ -651,34 +674,27 @@ class ElectricityDisplayGenerator:
         text_y = section2_y + (section_height - text_height) // 2
         self.draw.text((text_x, text_y), date_str, font=font_value, fill=255)
 
-        # Draw horizontal separator line after section 2
-        sep_y = section2_y + section_height
-        self.draw.line([(panel_x + 10, sep_y), (panel_x + panel_width - 10, sep_y)], fill=255, width=2)
+        # Draw horizontal divider line
+        divider2_y = section2_y + section_height
+        self.draw.line([(panel_x + 10, divider2_y), (panel_x + panel_width - 10, divider2_y)], fill=255, width=2)
 
-        # Section 3: Myčka (Dishwasher) - deferrable0
-        section3_y = section2_y + section_height
+        # Section 3: Myčka
+        section3_y = divider2_y
+        label3 = "Myčka"
+        font_section = self._get_font(24)  # Larger font for times
 
-        # Draw label at top of section
-        label_str = "Myčka"
-        bbox = self.draw.textbbox((0, 0), label_str, font=font_label)
+        bbox = self.draw.textbbox((0, 0), label3, font=font_label)
         text_width = bbox[2] - bbox[0]
         text_x = panel_x + (panel_width - text_width) // 2
-        label_y = section3_y + 10
-        self.draw.text((text_x, label_y), label_str, font=font_label, fill=255)
+        self.draw.text((text_x, section3_y + 10), label3, font=font_label, fill=255)
 
-        # Draw times vertically centered in remaining space
         if deferrable0_time:
             start_time, end_time = deferrable0_time
             start_str = start_time.strftime('%H:%M')
             end_str = end_time.strftime('%H:%M')
 
             # Calculate vertical center for both times
-            # Available space is from label_y + label_height to end of section
-            bbox = self.draw.textbbox((0, 0), label_str, font=font_label)
-            label_height = bbox[3] - bbox[1]
-            available_space_y_start = label_y + label_height + 10
-            available_space_height = section_height - (label_height + 20)
-            y_center = available_space_y_start + (available_space_height // 2)
+            y_center = section3_y + (section_height // 2)
 
             # Draw start time (upper half)
             bbox = self.draw.textbbox((0, 0), start_str, font=font_section)
@@ -695,42 +711,35 @@ class ElectricityDisplayGenerator:
             text_y = y_center + 10
             self.draw.text((text_x, text_y), end_str, font=font_section, fill=255)
         else:
-            # No schedule available
-            no_schedule_str = "Žádný"
-            bbox = self.draw.textbbox((0, 0), no_schedule_str, font=font_label)
+            no_data_str = "--:--"
+            bbox = self.draw.textbbox((0, 0), no_data_str, font=font_section)
             text_width = bbox[2] - bbox[0]
             text_height = bbox[3] - bbox[1]
             text_x = panel_x + (panel_width - text_width) // 2
-            text_y = section3_y + (section_height - text_height) // 2
-            self.draw.text((text_x, text_y), no_schedule_str, font=font_label, fill=255)
+            y_center = section3_y + (section_height // 2)
+            text_y = y_center - (text_height // 2)
+            self.draw.text((text_x, text_y), no_data_str, font=font_section, fill=255)
 
-        # Draw horizontal separator line after section 3
-        sep_y = section3_y + section_height
-        self.draw.line([(panel_x + 10, sep_y), (panel_x + panel_width - 10, sep_y)], fill=255, width=2)
+        # Draw horizontal divider line
+        divider3_y = section3_y + section_height
+        self.draw.line([(panel_x + 10, divider3_y), (panel_x + panel_width - 10, divider3_y)], fill=255, width=2)
 
-        # Section 4: EV Nabíjení (EV Charging) - deferrable1
-        section4_y = section3_y + section_height
+        # Section 4: EV Nabíjení
+        section4_y = divider3_y
+        label4 = "EV Nabíjení"
 
-        # Draw label at top of section
-        label_str = "EV Nabíjení"
-        bbox = self.draw.textbbox((0, 0), label_str, font=font_label)
+        bbox = self.draw.textbbox((0, 0), label4, font=font_label)
         text_width = bbox[2] - bbox[0]
         text_x = panel_x + (panel_width - text_width) // 2
-        label_y = section4_y + 10
-        self.draw.text((text_x, label_y), label_str, font=font_label, fill=255)
+        self.draw.text((text_x, section4_y + 10), label4, font=font_label, fill=255)
 
-        # Draw times vertically centered in remaining space
         if deferrable1_time:
             start_time, end_time = deferrable1_time
             start_str = start_time.strftime('%H:%M')
             end_str = end_time.strftime('%H:%M')
 
             # Calculate vertical center for both times
-            bbox = self.draw.textbbox((0, 0), label_str, font=font_label)
-            label_height = bbox[3] - bbox[1]
-            available_space_y_start = label_y + label_height + 10
-            available_space_height = section_height - (label_height + 20)
-            y_center = available_space_y_start + (available_space_height // 2)
+            y_center = section4_y + (section_height // 2)
 
             # Draw start time (upper half)
             bbox = self.draw.textbbox((0, 0), start_str, font=font_section)
@@ -747,14 +756,14 @@ class ElectricityDisplayGenerator:
             text_y = y_center + 10
             self.draw.text((text_x, text_y), end_str, font=font_section, fill=255)
         else:
-            # No schedule available
-            no_schedule_str = "Žádný"
-            bbox = self.draw.textbbox((0, 0), no_schedule_str, font=font_label)
+            no_data_str = "--:--"
+            bbox = self.draw.textbbox((0, 0), no_data_str, font=font_section)
             text_width = bbox[2] - bbox[0]
             text_height = bbox[3] - bbox[1]
             text_x = panel_x + (panel_width - text_width) // 2
-            text_y = section4_y + (section_height - text_height) // 2
-            self.draw.text((text_x, text_y), no_schedule_str, font=font_label, fill=255)
+            y_center = section4_y + (section_height // 2)
+            text_y = y_center - (text_height // 2)
+            self.draw.text((text_x, text_y), no_data_str, font=font_section, fill=255)
 
     def save_image(self, filename):
         """Save image to file"""
@@ -806,32 +815,25 @@ def main():
         print(f"  Price range: {first_price['timestamp']} to {last_price['timestamp']}")
 
     # Fetch deferrable schedules
-    print("Fetching deferrable schedules from Home Assistant...")
+    print("Fetching deferrable schedules...")
     deferrable0_time = ha_elec.get_deferrable_schedule(ha_elec.deferrable0_entity)
     deferrable1_time = ha_elec.get_deferrable_schedule(ha_elec.deferrable1_entity)
 
     if deferrable0_time:
-        start_time, end_time = deferrable0_time
-        print(f"  Deferrable0 (Myčka): {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}")
-    else:
-        print(f"  Deferrable0 (Myčka): No schedule found")
-
+        print(f"  Myčka optimal time: {deferrable0_time}")
     if deferrable1_time:
-        start_time, end_time = deferrable1_time
-        print(f"  Deferrable1 (EV Nabíjení): {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}")
-    else:
-        print(f"  Deferrable1 (EV Nabíjení): No schedule found")
+        print(f"  EV Nabíjení optimal time: {deferrable1_time}")
 
     # Generate display image
-    print("Generating electricity display image...")
+    print("Generating electricity display image (hourly version)...")
     generator = ElectricityDisplayGenerator()
     image = generator.create_display(spot_data, deferrable0_time, deferrable1_time)
 
     # Save image
-    output_path = 'data/electricity_display.png'
+    output_path = 'data/electricity_display_h.png'
     generator.save_image(output_path)
 
-    print(f"Electricity display image generated successfully: {output_path}")
+    print(f"Electricity display image (hourly) generated successfully: {output_path}")
 
 
 if __name__ == '__main__':
