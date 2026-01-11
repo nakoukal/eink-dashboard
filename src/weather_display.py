@@ -236,7 +236,7 @@ class HomeAssistantWeatherAPI:
         """Get weather forecast using weather.get_forecasts service"""
         try:
             forecast_type = self.forecast_config.get('type', 'daily')
-            num_days = self.forecast_config.get('days', 3)
+            num_days = self.forecast_config.get('days', 5)
 
             url = f"{self.base_url}/api/services/weather/get_forecasts"
             headers = {
@@ -285,20 +285,20 @@ class HomeAssistantWeatherAPI:
     def _map_condition(self, ha_condition):
         """Map Home Assistant weather condition to icon name"""
         condition_map = {
-            'clear-night': 'clear-night',
+            'clear-night': 'sunny',  # Use sunny as fallback (no clear-night icon)
             'cloudy': 'cloudy',
             'fog': 'fog',
-            'hail': 'hail',
-            'lightning': 'lightning',
-            'lightning-rainy': 'lightning',
-            'partlycloudy': 'partlycloudy',
-            'pouring': 'rainy',
-            'rainy': 'rainy',
+            'hail': 'rain',  # Use rain as fallback (no hail icon)
+            'lightning': 'thunderstorm',
+            'lightning-rainy': 'thunderstorm',
+            'partlycloudy': 'partly-cloudy',  # Fixed: match actual filename
+            'pouring': 'pouring',
+            'rainy': 'rain',
             'snowy': 'snowy',
             'snowy-rainy': 'snowy',
             'sunny': 'sunny',
-            'windy': 'windy',
-            'windy-variant': 'windy',
+            'windy': 'wind',  # Use wind icon
+            'windy-variant': 'wind',
             'exceptional': 'cloudy',
         }
         return condition_map.get(ha_condition, 'sunny')
@@ -543,12 +543,12 @@ class WeatherDisplayGenerator:
         if temp is None:
             temp_str = "--°C"
         else:
-            temp_str = f"{temp:.0f}°C"
+            temp_str = f"{temp:.1f}°C"
 
         # Weather icon (large, same visual weight as temperature)
-        icon_size = 90
-        icon_x = 25
-        icon_y = 75
+        icon_size = 85
+        icon_x = 20
+        icon_y = 70
         self._draw_icon(icon_x, icon_y, condition, icon_size)
 
         # Temperature next to icon - aligned with bottom of icon
@@ -683,11 +683,17 @@ class WeatherDisplayGenerator:
             # Wind direction: rotated arrow + text
             if wind_dir is not None:
                 dir_text = self._get_wind_direction(wind_dir)
-                # Draw rotated direction arrow
-                arrow_x = x_start + icon_size + 115
+                # Draw rotated direction arrow - moved further right
+                arrow_x = x_start + icon_size + 135
                 self._draw_wind_direction_icon(arrow_x, y_start + spacing * 3, wind_dir, 28)
                 # Draw direction text next to arrow
                 self.draw.text((arrow_x + 32, y_start + spacing * 3 + 6), dir_text, font=font_unit, fill=0)
+
+        # UV Index with icon
+        uv_index = data.get('uv_index')
+        if uv_index is not None:
+            self._draw_icon(x_start, y_start + spacing * 4, "uv", icon_size)
+            self.draw.text((x_start + icon_size + 8, y_start + spacing * 4 + 2), f"UV {uv_index:.0f}", font=font_value, fill=0)
 
     def _draw_temperature_graph(self, history_data):
         """Draw temperature history as bar graph"""
@@ -764,7 +770,7 @@ class WeatherDisplayGenerator:
                 self.draw.text((x - 8, graph_y + graph_height + 3), short_label, font=font_small, fill=0)
 
     def _draw_forecast(self, forecast):
-        """Draw 4-day weather forecast"""
+        """Draw 5-day weather forecast"""
         if not forecast or len(forecast) == 0:
             return
 
@@ -774,13 +780,13 @@ class WeatherDisplayGenerator:
         # Forecast section position - larger
         y_start = 350
         icon_size = 55
-        section_width = self.width // 4
+        section_width = self.width // 5  # Changed from 4 to 5 days
 
         # Draw separator line
         self.draw.line([(20, y_start - 12), (self.width - 20, y_start - 12)], fill=0, width=2)
 
-        # Draw up to 4 days
-        for i, day in enumerate(forecast[:4]):
+        # Draw up to 5 days
+        for i, day in enumerate(forecast[:5]):
             x_center = section_width * i + section_width // 2
 
             # Day name
@@ -789,13 +795,13 @@ class WeatherDisplayGenerator:
             day_width = bbox[2] - bbox[0]
             self.draw.text((x_center - day_width // 2, y_start), day_name, font=font_day, fill=0)
 
-            # Weather icon
+            # Weather icon - moved down to avoid overlapping with day name
             condition = day.get('condition', 'sunny')
             icon_x = x_center - icon_size // 2
-            icon_y = y_start + 16
+            icon_y = y_start + 28  # Increased from 16 to 28
             self._draw_icon(icon_x, icon_y, condition, icon_size)
 
-            # Temperature (high/low) with °C
+            # Temperature (high/low) with °C - moved down accordingly
             temp_high = day.get('temp_high')
             temp_low = day.get('temp_low')
 
@@ -807,7 +813,7 @@ class WeatherDisplayGenerator:
 
                 bbox = self.draw.textbbox((0, 0), temp_str, font=font_temp)
                 temp_width = bbox[2] - bbox[0]
-                self.draw.text((x_center - temp_width // 2, icon_y + icon_size + 2), temp_str, font=font_temp, fill=0)
+                self.draw.text((x_center - temp_width // 2, icon_y + icon_size + 4), temp_str, font=font_temp, fill=0)  # Increased spacing from 2 to 4
 
     def _draw_wind_rain(self, data):
         """Draw wind and rain information with icons"""
