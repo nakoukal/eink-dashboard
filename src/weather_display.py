@@ -485,7 +485,13 @@ class WeatherDisplayGenerator:
 
     def _get_font(self, size):
         """Get font with fallback for Linux, macOS, and Windows"""
+        # Get base directory for relative paths
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
         font_paths = [
+            # Project fonts directory (bundled with project)
+            os.path.join(base_dir, "fonts", "DejaVuSans-Bold.ttf"),
+            os.path.join(base_dir, "fonts", "DejaVuSans.ttf"),
             # Linux (Raspberry Pi)
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -503,6 +509,8 @@ class WeatherDisplayGenerator:
             except (OSError, IOError):
                 continue
 
+        # Fallback to default (very small bitmap font)
+        print(f"WARNING: No TrueType fonts found! Using default font (very small)")
         return ImageFont.load_default()
 
     def _draw_header(self, data):
