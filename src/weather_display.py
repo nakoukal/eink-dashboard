@@ -158,6 +158,168 @@ class EcowittAPI:
         }
 
 
+class HomeAssistantWeatherAPI:
+    """Handler for Home Assistant weather entities"""
+
+    def __init__(self, config):
+        self.config = config
+        ha_config = config.get('home_assistant', {})
+        self.base_url = ha_config.get('url', '').rstrip('/')
+        self.token = ha_config.get('token', '')
+        self.entities = ha_config.get('entities', {})
+        self.forecast_config = ha_config.get('forecast', {})
+        self.enabled = bool(self.base_url and self.token and self.entities)
+
+    def get_weather_data(self):
+        """Fetch current weather data from Home Assistant entities"""
+        if not self.enabled:
+            print("Home Assistant not configured, using mock data")
+            return self._get_mock_data()
+
+        try:
+            weather_data = {
+                'timestamp': datetime.now()
+            }
+
+            # Fetch each entity state
+            for key, entity_id in self.entities.items():
+                if key == 'forecast':
+                    continue  # Handle forecast separately
+
+                state = self._get_entity_state(entity_id)
+                if state is not None:
+                    weather_data[key] = state
+
+            # Get forecast if configured
+            forecast_entity = self.entities.get('forecast')
+            if forecast_entity:
+                forecast_data = self._get_forecast(forecast_entity)
+                if forecast_data:
+                    weather_data['forecast'] = forecast_data
+
+            return weather_data
+
+        except Exception as e:
+            print(f"Error fetching Home Assistant weather data: {e}")
+            return self._get_mock_data()
+
+    def _get_entity_state(self, entity_id):
+        """Get state of a single entity"""
+        try:
+            url = f"{self.base_url}/api/states/{entity_id}"
+            headers = {
+                'Authorization': f'Bearer {self.token}',
+                'Content-Type': 'application/json',
+            }
+
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+
+            data = response.json()
+            state_value = data.get('state')
+
+            # Handle binary sensors (on/off)
+            if entity_id.startswith('binary_sensor.'):
+                return state_value == 'on'
+
+            # Try to convert to float for numeric sensors
+            try:
+                return float(state_value)
+            except (ValueError, TypeError):
+                return state_value
+
+        except Exception as e:
+            print(f"Error fetching entity {entity_id}: {e}")
+            return None
+
+    def _get_forecast(self, forecast_entity):
+        """Get weather forecast using weather.get_forecasts service"""
+        try:
+            forecast_type = self.forecast_config.get('type', 'daily')
+            num_days = self.forecast_config.get('days', 3)
+
+            url = f"{self.base_url}/api/services/weather/get_forecasts"
+            headers = {
+                'Authorization': f'Bearer {self.token}',
+                'Content-Type': 'application/json',
+            }
+            payload = {
+                'entity_id': forecast_entity,
+                'type': forecast_type
+            }
+
+            response = requests.post(
+                f"{url}?return_response=true",
+                headers=headers,
+                json=payload,
+                timeout=10
+            )
+            response.raise_for_status()
+
+            data = response.json()
+            forecast_list = data.get('service_response', {}).get(forecast_entity, {}).get('forecast', [])
+
+            # Parse forecast data
+            parsed_forecast = []
+            for i, day_data in enumerate(forecast_list[:num_days]):
+                try:
+                    forecast_date = datetime.fromisoformat(day_data['datetime'].replace('Z', '+00:00'))
+                    parsed_forecast.append({
+                        'day': forecast_date.strftime('%a') if i > 0 else 'Dnes',
+                        'condition': self._map_condition(day_data.get('condition', 'unknown')),
+                        'temp_high': day_data.get('temperature'),
+                        'temp_low': day_data.get('templow'),
+                        'precipitation': day_data.get('precipitation', 0),
+                        'wind_speed': day_data.get('wind_speed'),
+                    })
+                except Exception as e:
+                    print(f"Error parsing forecast day: {e}")
+                    continue
+
+            return parsed_forecast
+
+        except Exception as e:
+            print(f"Error fetching forecast: {e}")
+            return []
+
+    def _map_condition(self, ha_condition):
+        """Map Home Assistant weather condition to icon name"""
+        condition_map = {
+            'clear-night': 'clear-night',
+            'cloudy': 'cloudy',
+            'fog': 'fog',
+            'hail': 'hail',
+            'lightning': 'lightning',
+            'lightning-rainy': 'lightning',
+            'partlycloudy': 'partlycloudy',
+            'pouring': 'rainy',
+            'rainy': 'rainy',
+            'snowy': 'snowy',
+            'snowy-rainy': 'snowy',
+            'sunny': 'sunny',
+            'windy': 'windy',
+            'windy-variant': 'windy',
+            'exceptional': 'cloudy',
+        }
+        return condition_map.get(ha_condition, 'sunny')
+
+    def _get_mock_data(self):
+        """Return mock data for testing"""
+        return {
+            'temperature': 22.5,
+            'humidity': 65.0,
+            'pressure': 1013.2,
+            'wind_speed': 5.5,
+            'wind_direction': 180.0,
+            'rain_rate': 0.0,
+            'rain_daily': 2.5,
+            'uv_index': 3.0,
+            'solar_radiation': 450.0,
+            'feels_like': 21.8,
+            'timestamp': datetime.now()
+        }
+
+
 class HomeAssistantAPI:
     """Handler for Home Assistant history data"""
 
@@ -166,7 +328,8 @@ class HomeAssistantAPI:
         ha_config = config.get('home_assistant', {})
         self.base_url = ha_config.get('url', '').rstrip('/')
         self.token = ha_config.get('token', '')
-        self.temp_entity = ha_config.get('temperature_entity', '')
+        self.entities = ha_config.get('entities', {})
+        self.temp_entity = self.entities.get('temperature', '')
         self.enabled = bool(self.base_url and self.token and self.temp_entity)
 
     def get_temperature_history(self, hours=24):
@@ -718,21 +881,42 @@ def main():
     # Load configuration
     config = load_config()
 
-    # Get weather data
-    print("Fetching weather data...")
-    ecowitt = EcowittAPI(config)
-    weather_data = ecowitt.get_weather_data()
+    # Check if Home Assistant entities are configured
+    ha_config = config.get('home_assistant', {})
+    use_ha_entities = bool(ha_config.get('entities'))
+
+    if use_ha_entities:
+        print("Using Home Assistant entities for weather data...")
+        ha_weather = HomeAssistantWeatherAPI(config)
+        weather_data = ha_weather.get_weather_data()
+    else:
+        print("Using Ecowitt API for weather data...")
+        ecowitt = EcowittAPI(config)
+        weather_data = ecowitt.get_weather_data()
 
     print("Weather data retrieved:")
     print(f"  Temperature: {weather_data.get('temperature')}°C")
     print(f"  Humidity: {weather_data.get('humidity')}%")
     print(f"  Pressure: {weather_data.get('pressure')} hPa")
+    print(f"  Wind Speed: {weather_data.get('wind_speed')} km/h")
+    print(f"  Wind Direction: {weather_data.get('wind_direction')}°")
+    print(f"  Rain Daily: {weather_data.get('rain_daily')} mm")
+
+    forecast = weather_data.get('forecast', [])
+    if forecast:
+        print(f"  Forecast days: {len(forecast)}")
 
     # Get temperature history from Home Assistant
     print("Fetching temperature history...")
     ha = HomeAssistantAPI(config)
     history_data = ha.get_temperature_history(hours=24)
     print(f"  History points: {len(history_data)}")
+
+    # Determine current weather condition from forecast or default
+    if forecast and len(forecast) > 0:
+        weather_data['condition'] = forecast[0].get('condition', 'sunny')
+    else:
+        weather_data['condition'] = 'sunny'
 
     # Generate display image
     print("Generating display image...")
