@@ -772,7 +772,7 @@ class ElectricityDisplayGenerator:
             print(f"Image saved to {filename}")
 
 
-def load_config(config_path='config/config.json'):
+def load_config(config_path='/config/eink-dashboard/config/config.json'):
     """Load configuration from JSON file"""
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
@@ -830,7 +830,7 @@ def main():
     image = generator.create_display(spot_data, deferrable0_time, deferrable1_time)
 
     # Save image
-    output_path = 'data/electricity_display_h.png'
+    output_path = '/config/eink-dashboard/data/electricity_display_h.png'
     generator.save_image(output_path)
 
     print(f"Electricity display image (hourly) generated successfully: {output_path}")

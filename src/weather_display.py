@@ -873,7 +873,7 @@ class WeatherDisplayGenerator:
             print(f"Image saved to {filename}")
 
 
-def load_config(config_path='config/config.json'):
+def load_config(config_path='/config/eink-dashboard/config/config.json'):
     """Load configuration from JSON file"""
     try:
         with open(config_path, 'r') as f:
@@ -938,7 +938,7 @@ def main():
     image = generator.create_display(weather_data, history_data)
 
     # Save image
-    output_path = 'data/weather_display.png'
+    output_path = '/config/eink-dashboard/data/weather_display.png'
     generator.save_image(output_path)
 
     print(f"Display image generated successfully: {output_path}")
