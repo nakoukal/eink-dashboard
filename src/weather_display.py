@@ -872,6 +872,24 @@ class WeatherDisplayGenerator:
             self.image.save(filename)
             print(f"Image saved to {filename}")
 
+    def save_raw_binary(self, filename):
+        """Save image as raw binary format for e-ink display (1-bit per pixel)"""
+        if not self.image:
+            return
+
+        # Ensure image is in 1-bit mode
+        img = self.image.convert('1')
+
+        # Get image data as bytes
+        # PIL stores 1-bit images with 8 pixels per byte
+        raw_bytes = img.tobytes()
+
+        # Save raw binary file
+        with open(filename, 'wb') as f:
+            f.write(raw_bytes)
+
+        print(f"Raw binary image saved to {filename} ({len(raw_bytes)} bytes)")
+
 
 def load_config(config_path='/config/eink-dashboard/config/config.json'):
     """Load configuration from JSON file"""
@@ -946,10 +964,18 @@ def main():
     # Create output folder if it doesn't exist
     os.makedirs(output_folder, exist_ok=True)
 
+    # Save PNG version
     generator.save_image(output_path)
 
+    # Save RAW binary version for ESP32
+    raw_filename = output_filename.replace('.png', '.raw')
+    raw_path = os.path.join(output_folder, raw_filename)
+    generator.save_raw_binary(raw_path)
+
     print(f"Display image generated successfully: {output_path}")
-    print(f"Image accessible at: http://192.168.1.98:8123/local/{output_filename}")
+    print(f"Raw binary image generated: {raw_path}")
+    print(f"PNG accessible at: http://192.168.1.98:8123/local/{output_filename}")
+    print(f"RAW accessible at: http://192.168.1.98:8123/local/{raw_filename}")
 
 
 if __name__ == '__main__':
