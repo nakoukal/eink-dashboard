@@ -937,11 +937,19 @@ def main():
     generator = WeatherDisplayGenerator()
     image = generator.create_display(weather_data, history_data)
 
-    # Save image
-    output_path = '/config/eink-dashboard/data/weather_display.png'
+    # Get output path from config
+    output_config = config.get('output', {})
+    output_folder = output_config.get('folder', '/config/eink-dashboard/data')
+    output_filename = output_config.get('filename', 'weather_display.png')
+    output_path = os.path.join(output_folder, output_filename)
+
+    # Create output folder if it doesn't exist
+    os.makedirs(output_folder, exist_ok=True)
+
     generator.save_image(output_path)
 
     print(f"Display image generated successfully: {output_path}")
+    print(f"Image accessible at: http://192.168.1.98:8123/local/{output_filename}")
 
 
 if __name__ == '__main__':
