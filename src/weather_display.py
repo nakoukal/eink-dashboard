@@ -715,28 +715,38 @@ class WeatherDisplayGenerator:
         # Get last 24 data points
         data_points = history_data[-24:] if len(history_data) > 24 else history_data
 
-        # Calculate min/max temperatures
         temps = [d['temperature'] for d in data_points]
-        temp_min = min(temps)
-        temp_max = max(temps)
-        temp_range = max(temp_max - temp_min, 1)  # Avoid division by zero
+        temp_min_actual = min(temps)
+        temp_max_actual = max(temps)
 
-        # Add padding to temp range
-        temp_min = temp_min - 2
-        temp_max = temp_max + 2
-        temp_range = temp_max - temp_min
+        # Define plot range with minimal padding for larger bars
+        temp_range = temp_max_actual - temp_min_actual
 
-        # Draw horizontal grid lines and temperature labels
-        for i in range(3):
-            y = graph_y + int(graph_height * i / 2)
-            temp_val = temp_max - (temp_range * i / 2)
-            # Grid line (dashed effect with short segments)
-            for x in range(graph_x + 1, graph_x + graph_width, 8):
-                self.draw.line([(x, y), (x + 4, y)], fill=0, width=1)
-            # Temperature label on right
-            temp_label = f"{temp_val:.0f}°"
-            self.draw.text((graph_x + graph_width + 5, y - 6), temp_label, font=font_small, fill=0)
+        # Use smaller padding - just 10% of range or 0.5°C minimum
+        padding = max(0.5, temp_range * 0.1)
 
+        # Round to nice values for cleaner display
+        plot_min = round(temp_min_actual - padding)
+        plot_max = round(temp_max_actual + padding)
+        plot_range = plot_max - plot_min
+        if plot_range == 0: plot_range = 1
+
+        # Function to convert temperature to Y coordinate
+        def temp_to_y(temp):
+            return graph_y + graph_height - 2 - (((temp - plot_min) / plot_range) * (graph_height - 4))
+
+        # Check for zero crossing
+        zero_y = None
+        if plot_min < 0 and plot_max > 0:
+            zero_y = temp_to_y(0)
+            self.draw.line([(graph_x, zero_y), (graph_x + graph_width, zero_y)], fill=0, width=1)
+            # Add a "0°" label to the left of the zero line for clarity
+            self.draw.text((graph_x - 15, zero_y - 8), "0°", font=font_small, fill=0)
+
+        # Draw temperature labels on the right for the plot's min and max
+        self.draw.text((graph_x + graph_width + 5, graph_y - 6), f"{plot_max:.0f}°", font=font_small, fill=0)
+        self.draw.text((graph_x + graph_width + 5, graph_y + graph_height - 10), f"{plot_min:.0f}°", font=font_small, fill=0)
+        
         # Calculate bar dimensions
         num_bars = len(data_points)
         bar_spacing = 2
@@ -745,21 +755,26 @@ class WeatherDisplayGenerator:
         # Draw bars
         for i, data_point in enumerate(data_points):
             temp = data_point['temperature']
-
-            # Calculate bar height (from bottom of graph)
-            bar_height = int(((temp - temp_min) / temp_range) * (graph_height - 4))
-            bar_height = max(2, bar_height)  # Minimum bar height
-
-            # Calculate bar position
             x = graph_x + 2 + i * (bar_width + bar_spacing)
-            y_top = graph_y + graph_height - 2 - bar_height
-            y_bottom = graph_y + graph_height - 2
+            
+            y_bar_end = temp_to_y(temp)
 
-            # Draw filled bar
-            self.draw.rectangle(
-                [(x, y_top), (x + bar_width, y_bottom)],
-                fill=0
-            )
+            if zero_y is not None:
+                # If zero line exists, draw bars from it
+                if temp >= 0:
+                    y1, y2 = y_bar_end, zero_y
+                else:  # temp < 0
+                    y1, y2 = zero_y, y_bar_end
+                
+                # Ensure y1 is the top coordinate (smaller value)
+                if y1 > y2:
+                    y1, y2 = y2, y1
+                
+                self.draw.rectangle([(x, y1), (x + bar_width, y2)], fill=0)
+            else:
+                # If no zero line, draw all bars from the bottom of the graph area
+                y_bottom = graph_y + graph_height - 2
+                self.draw.rectangle([(x, y_bar_end), (x + bar_width, y_bottom)], fill=0)
 
         # Draw time labels (every 6 hours)
         for i in range(0, num_bars, max(1, num_bars // 4)):
