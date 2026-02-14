@@ -29,6 +29,7 @@ config/config.json
 data/*.png
 data/*.log
 data/*.csv
+data/*.raw
 
 # IDE
 .vscode/
