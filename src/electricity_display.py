@@ -32,6 +32,7 @@ class HomeAssistantElectricityAPI:
         self.currency = elec_config.get('currency', 'Kč/kWh')
         self.deferrable0_entity = elec_config.get('deferrable0_entity', 'sensor.p_deferrable0')
         self.deferrable1_entity = elec_config.get('deferrable1_entity', 'sensor.p_deferrable1')
+        self.pv_forecast_entity = elec_config.get('pv_forecast_entity', 'sensor.p_pv_forecast')
 
         self.enabled = bool(self.base_url and self.token and self.spot_entity)
 
@@ -123,6 +124,47 @@ class HomeAssistantElectricityAPI:
             'currency': 'Kč/kWh',
             'timestamp': datetime.now()
         }
+
+    def get_pv_forecast(self):
+        """Fetch PV forecast data from Home Assistant sensor"""
+        if not self.enabled:
+            return []
+
+        try:
+            url = f"{self.base_url}/api/states/{self.pv_forecast_entity}"
+            headers = {
+                'Authorization': f'Bearer {self.token}',
+                'Content-Type': 'application/json',
+            }
+
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+
+            data = response.json()
+            attributes = data.get('attributes', {})
+            forecasts = attributes.get('forecasts', [])
+
+            pv_data = []
+            for entry in forecasts:
+                try:
+                    timestamp = datetime.fromisoformat(entry['date'].replace('Z', '+00:00'))
+                    # p_pv_forecast is in W (15-min intervals), convert to kWh: W * 0.25h / 1000
+                    power_w = float(entry.get('p_pv_forecast', 0))
+                    power_kwh = power_w * 0.25 / 1000.0
+                    pv_data.append({
+                        'timestamp': timestamp,
+                        'power_kwh': power_kwh
+                    })
+                except (ValueError, TypeError, KeyError) as e:
+                    print(f"Error parsing PV forecast entry: {e}")
+                    continue
+
+            pv_data.sort(key=lambda x: x['timestamp'])
+            return pv_data
+
+        except Exception as e:
+            print(f"Error fetching PV forecast: {e}")
+            return []
 
     def get_deferrable_schedule(self, entity_id):
         """Fetch deferrable schedule from Home Assistant sensor - returns (start_time, end_time) tuple"""

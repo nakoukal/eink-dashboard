@@ -33,6 +33,7 @@ class HomeAssistantElectricityAPI:
         self.deferrable0_entity = elec_config.get('deferrable0_entity', 'sensor.p_deferrable0')
         self.deferrable1_entity = elec_config.get('deferrable1_entity', 'sensor.p_deferrable1')
         self.deferrable2_entity = elec_config.get('deferrable2_entity', 'sensor.p_deferrable2')
+        self.pv_forecast_entity = elec_config.get('pv_forecast_entity', 'sensor.p_pv_forecast')
 
         self.enabled = bool(self.base_url and self.token and self.spot_entity)
 
@@ -125,6 +126,65 @@ class HomeAssistantElectricityAPI:
             'timestamp': datetime.now()
         }
 
+    def get_pv_forecast(self):
+        """Fetch PV production forecast from Home Assistant sensor.
+        Returns list of {'timestamp': datetime, 'power_kw': float} aggregated to hourly avg kW."""
+        if not self.enabled:
+            return []
+
+        try:
+            url = f"{self.base_url}/api/states/{self.pv_forecast_entity}"
+            headers = {
+                'Authorization': f'Bearer {self.token}',
+                'Content-Type': 'application/json',
+            }
+
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+
+            data = response.json()
+            attributes = data.get('attributes', {})
+            forecasts = attributes.get('forecasts', [])
+
+            # Parse 15-min interval data (values are in W)
+            raw_data = []
+            for entry in forecasts:
+                try:
+                    timestamp = datetime.fromisoformat(entry['date'].replace('Z', '+00:00'))
+                    power_w = float(entry.get('p_pv_forecast', 0))
+                    raw_data.append({
+                        'timestamp': timestamp,
+                        'power_w': power_w
+                    })
+                except (ValueError, TypeError, KeyError) as e:
+                    print(f"Error parsing PV forecast entry: {e}")
+                    continue
+
+            if not raw_data:
+                return []
+
+            # Aggregate 15-min W values to hourly average kW
+            hourly_data = {}
+            for entry in raw_data:
+                hour_start = entry['timestamp'].replace(minute=0, second=0, microsecond=0)
+                if hour_start not in hourly_data:
+                    hourly_data[hour_start] = []
+                hourly_data[hour_start].append(entry['power_w'])
+
+            pv_hourly = []
+            for hour_start in sorted(hourly_data.keys()):
+                avg_w = sum(hourly_data[hour_start]) / len(hourly_data[hour_start])
+                pv_hourly.append({
+                    'timestamp': hour_start,
+                    'power_kw': avg_w / 1000.0  # W -> kW
+                })
+
+            return pv_hourly
+
+        except Exception as e:
+            print(f"Error fetching PV forecast: {e}")
+            return []
+
     def get_deferrable_schedule(self, entity_id):
         """Fetch deferrable schedule from Home Assistant sensor - returns (start_time, end_time) tuple"""
         if not self.enabled:
@@ -214,7 +274,7 @@ class ElectricityDisplayGenerator:
 
         return hourly_prices
 
-    def create_display(self, spot_data, deferrable0_time=None, deferrable1_time=None, deferrable2_time=None):
+    def create_display(self, spot_data, deferrable0_time=None, deferrable1_time=None, deferrable2_time=None, pv_forecast=None):
         """Create electricity price display image"""
         # Create white background
         self.image = Image.new('1', (self.width, self.height), 255)
@@ -240,10 +300,19 @@ class ElectricityDisplayGenerator:
 
         prices_today_tomorrow = [p for p in prices if today_start <= p['timestamp'] < tomorrow_end]
 
-        # Find current time slot
+        # Find current time slot (15min interval)
         current_slot = self._find_current_slot(prices)
 
-        # Calculate average price for smiley indicator
+        # Calculate average price for current hour
+        current_hour_avg = None
+        if prices:
+            current_hour_start = now.replace(minute=0, second=0, microsecond=0)
+            current_hour_end = current_hour_start + timedelta(hours=1)
+            current_hour_prices = [p['price'] for p in prices if current_hour_start <= p['timestamp'] < current_hour_end]
+            if current_hour_prices:
+                current_hour_avg = sum(current_hour_prices) / len(current_hour_prices)
+
+        # Calculate average price for smiley indicator (full 24h period)
         avg_price = None
         if prices_today_tomorrow:
             hourly_prices = self._aggregate_to_hourly(prices_today_tomorrow)
@@ -253,8 +322,13 @@ class ElectricityDisplayGenerator:
 
         # Draw layout sections
         self._draw_header(spot_data)
-        self._draw_current_price(current_price, currency, avg_price)
-        self._draw_price_chart(prices_today_tomorrow, current_slot, deferrable0_time)
+        self._draw_current_price(current_hour_avg, current_price, currency, avg_price)
+        deferrables = [
+            ('M', deferrable0_time),   # Myčka
+            ('P', deferrable2_time),   # Pračka
+            ('EV', deferrable1_time),  # EV Nabíjení
+        ]
+        self._draw_price_chart(prices_today_tomorrow, current_slot, deferrables=deferrables, pv_forecast=pv_forecast or [])
         self._draw_statistics(prices_today_tomorrow, currency)
         self._draw_info_panels(deferrable0_time, deferrable1_time, deferrable2_time)
 
@@ -319,14 +393,16 @@ class ElectricityDisplayGenerator:
         label = "AKTUÁLNÍ CENA"
         self.draw.text((20, 15), label, font=font_label, fill=0)
 
-    def _draw_current_price(self, current_price, currency, avg_price=None):
-        """Draw current price display - below the label on left, with smiley indicator"""
-        if current_price is None:
-            price_str = "-- " + currency.split('/')[0]
+    def _draw_current_price(self, hourly_avg_price, current_15min_price, currency, avg_price=None):
+        """Draw current price display - hourly average as main, 15min price as smaller text after smiley"""
+        # Extract just the currency symbol (Kč)
+        curr_symbol = currency.split('/')[0]
+        
+        # Main price display (hourly average)
+        if hourly_avg_price is None:
+            price_str = "-- " + curr_symbol
         else:
-            # Extract just the currency symbol (Kč)
-            curr_symbol = currency.split('/')[0]
-            price_str = f"{current_price:.2f} {curr_symbol}"
+            price_str = f"{hourly_avg_price:.2f} {curr_symbol}"
 
         # Price display
         font_price = self._get_font(60)
@@ -338,7 +414,7 @@ class ElectricityDisplayGenerator:
         self.draw.text((price_x, price_y), price_str, font=font_price, fill=0)
 
         # Draw smiley face indicator based on price vs average
-        if current_price is not None and avg_price is not None:
+        if hourly_avg_price is not None and avg_price is not None:
             # Calculate position for smiley (right of price text)
             bbox = self.draw.textbbox((price_x, price_y), price_str, font=font_price)
             smiley_x = bbox[2] + 25  # 25px gap after price
@@ -372,7 +448,7 @@ class ElectricityDisplayGenerator:
             mouth_left = smiley_x + smiley_radius - 12
             mouth_right = smiley_x + smiley_radius + 12
 
-            if current_price < avg_price:
+            if hourly_avg_price < avg_price:
                 # Happy face - smile (arc curving down)
                 self.draw.arc(
                     [(mouth_left, mouth_y - 8), (mouth_right, mouth_y + 8)],
@@ -384,6 +460,17 @@ class ElectricityDisplayGenerator:
                     [(mouth_left, mouth_y - 2), (mouth_right, mouth_y + 14)],
                     start=180, end=360, fill=0, width=3
                 )
+
+            # Draw 15min current price after smiley (smaller text)
+            if current_15min_price is not None:
+                interval_price_str = f"{current_15min_price:.2f} {curr_symbol}"
+                font_small = self._get_font(24)  # Smaller font for 15min price
+                
+                # Position after smiley with some gap
+                interval_x = smiley_x + smiley_radius * 2 + 20
+                interval_y = price_y + 30  # Align vertically with middle of main price
+                
+                self.draw.text((interval_x, interval_y), interval_price_str, font=font_small, fill=0)
 
     def _get_chart_prices(self, prices):
         """Filter and aggregate prices for chart display (next 24 hours)"""
@@ -419,19 +506,64 @@ class ElectricityDisplayGenerator:
         # Aggregate to hourly averages
         return self._aggregate_to_hourly(filtered_prices)
 
-    def _draw_price_chart(self, prices, current_slot, deferrable0_time=None):
-        """Draw bar chart of electricity prices"""
+    def _catmull_rom_spline(self, points, num_interpolated=8):
+        """Generate smooth curve through points using Catmull-Rom spline.
+        Returns list of (x, y) integer tuples."""
+        if len(points) < 2:
+            return points
+
+        # Duplicate first and last points for boundary conditions
+        pts = [points[0]] + points + [points[-1]]
+        smooth = []
+
+        for i in range(1, len(pts) - 2):
+            p0 = pts[i - 1]
+            p1 = pts[i]
+            p2 = pts[i + 1]
+            p3 = pts[i + 2]
+
+            for t_step in range(num_interpolated):
+                t = t_step / num_interpolated
+                t2 = t * t
+                t3 = t2 * t
+
+                # Catmull-Rom matrix
+                x = 0.5 * (
+                    2 * p1[0] +
+                    (-p0[0] + p2[0]) * t +
+                    (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 +
+                    (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3
+                )
+                y = 0.5 * (
+                    2 * p1[1] +
+                    (-p0[1] + p2[1]) * t +
+                    (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 +
+                    (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3
+                )
+                smooth.append((int(x), int(y)))
+
+        # Add final point
+        smooth.append(points[-1])
+        return smooth
+
+    def _draw_price_chart(self, prices, current_slot, deferrables=None, pv_forecast=None):
+        """Draw bar chart of electricity prices with optional PV forecast line and deferrable indicators"""
         if not prices or len(prices) < 2:
             return
 
         font_label = self._get_font(16)
         font_small = self._get_font(14)
 
-        # Chart area - adjusted to make room for info panels on right
-        chart_x = 30  # Moved right for better centering (was 10)
-        chart_y = 135  # Below current price
-        chart_width = self.width - 200  # Reduced to make space for 3 info boxes (was width - 80)
-        chart_height = 225  # Increased height
+        # Chart area
+        chart_x = 30
+        chart_y = 120
+        chart_width = self.width - 200  # Space for right panel
+        chart_height = 225
+
+        # Bars fill the full chart height
+        bars_bottom = chart_y + chart_height - 2
+        bars_height = bars_bottom - chart_y
+        bottom_y = bars_bottom
 
         # Get filtered and aggregated prices for chart
         all_prices = self._get_chart_prices(prices)
@@ -439,28 +571,23 @@ class ElectricityDisplayGenerator:
         if not all_prices:
             return
 
-        # Calculate price range - start near minimum for better visual contrast
+        # Calculate price range - always start from 0
         price_values = [p['price'] for p in all_prices]
         data_min_price = min(price_values)
         data_max_price = max(price_values)
 
-        # Start Y axis slightly below minimum price for better visual distinction
-        # Use 80% of min price as bottom, or 0 if prices are very low
-        price_range_data = data_max_price - data_min_price
-        min_price = max(0, data_min_price - price_range_data * 0.15)
+        min_price = 0  # Always start Y-axis from 0 Kč
         max_price = data_max_price
 
-        # Add 10% padding to top
-        padding = (max_price - min_price) * 0.1
+        # Add padding to top - PV extends ~30% above bars
+        padding = (max_price - min_price) * 0.4
         max_price = max_price + padding
         price_range = max_price - min_price
 
         # Calculate bar dimensions with spacing
         num_bars = len(all_prices)
-        bar_spacing = 3  # 3px gap between bars (increased from 2px)
+        bar_spacing = 3
         bar_width = max(1, (chart_width - (num_bars - 1) * bar_spacing) // num_bars)
-        # Total width needed
-        total_needed = num_bars * bar_width + (num_bars - 1) * bar_spacing
 
         # Find current bar index (exact hour match)
         current_bar_idx = None
@@ -470,35 +597,28 @@ class ElectricityDisplayGenerator:
                     current_bar_idx = idx
                     break
 
-        # Calculate Y position for 0 price line
-        zero_normalized = (0 - min_price) / price_range
-        zero_y = chart_y + chart_height - 2 - int(zero_normalized * (chart_height - 4))
-
         # Calculate average price for threshold line
         avg_price = sum(price_values) / len(price_values)
         avg_normalized = (avg_price - min_price) / price_range
-        avg_y = chart_y + chart_height - 2 - int(avg_normalized * (chart_height - 4))
+        avg_y = chart_y + bars_height - int(avg_normalized * bars_height)
 
-        # Draw bottom separator line (same style as statistics separator)
-        # 2px width, 20px gap from edges
-        bottom_y = chart_y + chart_height - 2
+        # Draw bottom separator line (below deferrable band)
         self.draw.line([(20, bottom_y), (self.width - 20, bottom_y)], fill=0, width=2)
 
         # Draw bars (hourly intervals for next 24 hours)
         # Part below average: filled, part above average: outline only
         for i, price_entry in enumerate(all_prices):
             price = price_entry['price']
-            timestamp = price_entry['timestamp']
 
-            # Calculate bar height
+            # Calculate bar height within bars area
             normalized = (price - min_price) / price_range
-            bar_height = int(normalized * (chart_height - 4))
+            bar_height = int(normalized * bars_height)
             bar_height = max(1, bar_height)
 
             # Calculate bar position
             x = chart_x + i * (bar_width + bar_spacing)
-            y_top = chart_y + chart_height - 2 - bar_height
-            y_bottom = chart_y + chart_height - 2
+            y_top = bars_bottom - bar_height
+            y_bottom = bars_bottom
 
             # Determine if this interval is current
             is_current = (i == current_bar_idx)
@@ -530,8 +650,7 @@ class ElectricityDisplayGenerator:
                     fill=0
                 )
 
-        # Draw tick marks and labels for hourly bars
-        # Show label every 3 hours
+        # Draw tick marks and labels below X-axis
         font_tiny = self._get_font(14)
 
         for i, price_entry in enumerate(all_prices):
@@ -539,22 +658,21 @@ class ElectricityDisplayGenerator:
             hour = timestamp.hour
             is_current = (i == current_bar_idx)
 
-            # Calculate center of this bar
             bar_center_x = chart_x + i * (bar_width + bar_spacing) + bar_width // 2
 
-            # Draw small tick mark for every hour (5px high)
-            tick_top = chart_y + chart_height + 2
+            # Tick mark below X-axis line
+            tick_top = bottom_y + 2
             tick_bottom = tick_top + 5
             self.draw.line([(bar_center_x, tick_top), (bar_center_x, tick_bottom)], fill=0, width=1)
 
-            # Draw triangle indicator for current hour
+            # Triangle indicator for current hour (inside bar area)
             if is_current:
-                triangle_top = chart_y + chart_height - 5
+                triangle_top = bars_bottom - 5
                 triangle_size = 8
                 triangle_points = [
-                    (bar_center_x, triangle_top),  # Top point
-                    (bar_center_x - triangle_size, triangle_top + triangle_size),  # Bottom left
-                    (bar_center_x + triangle_size, triangle_top + triangle_size)   # Bottom right
+                    (bar_center_x, triangle_top),
+                    (bar_center_x - triangle_size, triangle_top + triangle_size),
+                    (bar_center_x + triangle_size, triangle_top + triangle_size)
                 ]
                 self.draw.polygon(triangle_points, fill=0)
 
@@ -564,75 +682,88 @@ class ElectricityDisplayGenerator:
                 bbox = self.draw.textbbox((0, 0), label, font=font_tiny)
                 text_width = bbox[2] - bbox[0]
                 text_x = bar_center_x - text_width // 2
-                self.draw.text((text_x, chart_y + chart_height + 8), label, font=font_tiny, fill=0)
+                self.draw.text((text_x, bottom_y + 8), label, font=font_tiny, fill=0)
 
-        # Draw deferrable0 (Myčka) indicator above bars
-        if deferrable0_time:
-            start_time, end_time = deferrable0_time
+        # Draw PV forecast line graph overlay
+        pv_total_height = bars_height
+        if pv_forecast:
+            pv_in_range = [pv for pv in pv_forecast if any(
+                p['timestamp'] == pv['timestamp'] for p in all_prices
+            )]
 
-            # Find bar indices that fall within deferrable time range
-            first_bar_idx = None
-            last_bar_idx = None
-            max_bar_height_in_range = 0
+            if pv_in_range:
+                max_pv_kw = max(pv['power_kw'] for pv in pv_in_range)
+                if max_pv_kw > 0:
+                    time_to_idx = {p['timestamp']: i for i, p in enumerate(all_prices)}
 
-            for i, price_entry in enumerate(all_prices):
-                bar_time = price_entry['timestamp']
-                bar_end_time = bar_time + timedelta(hours=1)
+                    points = []
+                    for pv in pv_in_range:
+                        if pv['power_kw'] <= 0:
+                            continue
+                        idx = time_to_idx.get(pv['timestamp'])
+                        if idx is not None:
+                            px = chart_x + idx * (bar_width + bar_spacing) + bar_width // 2
+                            normalized = pv['power_kw'] / (max_pv_kw * 1.1)
+                            py = bars_bottom - int(normalized * pv_total_height)
+                            points.append((px, py))
 
-                # Check if this bar overlaps with deferrable time range
-                if bar_time <= end_time and bar_end_time >= start_time:
-                    if first_bar_idx is None:
-                        first_bar_idx = i
-                    last_bar_idx = i
+                    if len(points) >= 2:
+                        smooth_points = self._catmull_rom_spline(points, num_interpolated=8)
+                        # White halo
+                        for j in range(len(smooth_points) - 1):
+                            self.draw.line([smooth_points[j], smooth_points[j + 1]], fill=255, width=7)
+                        # Black line
+                        for j in range(len(smooth_points) - 1):
+                            self.draw.line([smooth_points[j], smooth_points[j + 1]], fill=0, width=3)
 
-                    # Calculate bar height for this bar
-                    price = price_entry['price']
-                    normalized = (price - min_price) / price_range
-                    bar_height = int(normalized * (chart_height - 4))
-                    if bar_height > max_bar_height_in_range:
-                        max_bar_height_in_range = bar_height
+                    pv_label = f"{max_pv_kw:.1f}kW"
+                    font_pv = self._get_font(12)
+                    bbox = self.draw.textbbox((0, 0), pv_label, font=font_pv)
+                    label_w = bbox[2] - bbox[0]
+                    self.draw.text((chart_x + chart_width - label_w - 5, chart_y + 2), pv_label, font=font_pv, fill=0)
 
-            if first_bar_idx is not None and last_bar_idx is not None:
-                # Calculate center position of the deferrable range
-                first_bar_x = chart_x + first_bar_idx * (bar_width + bar_spacing)
-                last_bar_x = chart_x + last_bar_idx * (bar_width + bar_spacing) + bar_width
-                center_x = (first_bar_x + last_bar_x) // 2
+        # Draw deferrable schedule indicators as one wide band below X-axis
+        # Each bar block gets the letter of the deferrable with the latest start time
+        if deferrables:
+            font_def = self._get_font(14)
+            band_h = 21
+            band_y = bottom_y + 24  # Below hour labels
 
-                # Calculate top of highest bar in range
-                highest_bar_top = chart_y + chart_height - 2 - max_bar_height_in_range
+            # Assign winning label per column - deferrable with latest start_time wins on overlap
+            col_label = [None] * len(all_prices)
+            col_start = [None] * len(all_prices)  # track start_time for comparison
+            for label, time_range in deferrables:
+                if not time_range:
+                    continue
+                start_time, end_time = time_range
+                for i, price_entry in enumerate(all_prices):
+                    bar_time = price_entry['timestamp']
+                    bar_end_time = bar_time + timedelta(hours=1)
+                    if bar_time <= end_time and bar_end_time >= start_time:
+                        # Pick the deferrable with the latest (youngest) start_time
+                        if col_label[i] is None or start_time > col_start[i]:
+                            col_label[i] = label
+                            col_start[i] = start_time
 
-                # Position icon dynamically above highest bar (with 35px gap for icon + bracket)
-                icon_radius = 12
-                icon_y = highest_bar_top - 35  # 35px above highest bar
-
-                # Draw circle
-                self.draw.ellipse(
-                    [(center_x - icon_radius, icon_y - icon_radius),
-                     (center_x + icon_radius, icon_y + icon_radius)],
-                    outline=0, fill=255, width=2
+            # Draw solid black band and letter for each active column
+            for i in range(len(all_prices)):
+                if col_label[i] is None:
+                    continue
+                x_left = chart_x + i * (bar_width + bar_spacing)
+                x_right = x_left + bar_width
+                self.draw.rectangle(
+                    [(x_left, band_y), (x_right, band_y + band_h)],
+                    fill=0
                 )
 
-                # Draw "M" letter centered in circle
-                font_icon = self._get_font(16)
-                letter = "M"
-                bbox = self.draw.textbbox((0, 0), letter, font=font_icon)
-                letter_width = bbox[2] - bbox[0]
-                letter_height = bbox[3] - bbox[1]
-                letter_x = center_x - letter_width // 2
-                letter_y = icon_y - letter_height // 2 - 2
-                self.draw.text((letter_x, letter_y), letter, font=font_icon, fill=0)
-
-                # Draw horizontal bracket above the bars (dynamically positioned)
-                bracket_y = highest_bar_top - 8  # Bracket 8px above highest bar
-                self.draw.line([(first_bar_x, bracket_y), (last_bar_x, bracket_y)], fill=0, width=2)
-                # Small vertical lines at ends of bracket
-                self.draw.line([(first_bar_x, bracket_y), (first_bar_x, bracket_y + 5)], fill=0, width=2)
-                self.draw.line([(last_bar_x, bracket_y), (last_bar_x, bracket_y + 5)], fill=0, width=2)
-
-                # Draw line from icon down to bracket
-                line_y_start = icon_y + icon_radius
-                line_y_end = bracket_y
-                self.draw.line([(center_x, line_y_start), (center_x, line_y_end)], fill=0, width=1)
+                # Draw label centered in this single bar block
+                lbl = col_label[i]
+                bbox = self.draw.textbbox((0, 0), lbl, font=font_def)
+                label_w = bbox[2] - bbox[0]
+                label_h = bbox[3] - bbox[1]
+                label_x = x_left + (bar_width - label_w) // 2
+                label_y = band_y + (band_h - label_h) // 2 - 1
+                self.draw.text((label_x, label_y), lbl, font=font_def, fill=255)
 
     def _draw_statistics(self, prices, currency):
         """Draw price statistics (min, avg, max) with vertical separators"""
@@ -1012,10 +1143,20 @@ def main():
     if deferrable2_time:
         print(f"  Pračka optimal time: {deferrable2_time}")
 
+    # Fetch PV forecast
+    print("Fetching PV production forecast...")
+    pv_forecast = ha_elec.get_pv_forecast()
+    if pv_forecast:
+        print(f"  PV forecast entries: {len(pv_forecast)} hours")
+        max_pv = max(pv['power_kw'] for pv in pv_forecast)
+        print(f"  Peak PV forecast: {max_pv:.2f} kW")
+    else:
+        print("  No PV forecast data available")
+
     # Generate display image
     print("Generating electricity display image (hourly version)...")
     generator = ElectricityDisplayGenerator()
-    image = generator.create_display(spot_data, deferrable0_time, deferrable1_time, deferrable2_time)
+    image = generator.create_display(spot_data, deferrable0_time, deferrable1_time, deferrable2_time, pv_forecast)
 
     # Get output path from config
     output_config = config.get('output', {})
