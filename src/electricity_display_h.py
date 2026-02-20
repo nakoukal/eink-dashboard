@@ -696,9 +696,13 @@ class ElectricityDisplayGenerator:
                 if max_pv_kw > 0:
                     time_to_idx = {p['timestamp']: i for i, p in enumerate(all_prices)}
 
+                    # Minimum threshold to avoid drawing line for negligible values (e.g., nighttime)
+                    min_threshold_kw = 0.1  # Only show PV forecast above 100W
+
                     points = []
                     for pv in pv_in_range:
-                        if pv['power_kw'] <= 0:
+                        # Skip values below threshold to avoid line starting from left edge
+                        if pv['power_kw'] < min_threshold_kw:
                             continue
                         idx = time_to_idx.get(pv['timestamp'])
                         if idx is not None:

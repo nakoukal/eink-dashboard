@@ -226,7 +226,7 @@ class HomeAssistantWeatherAPI:
             try:
                 return float(state_value)
             except (ValueError, TypeError):
-                return state_value
+                return None  # Return None for unavailable/unknown/non-numeric states
 
         except Exception as e:
             print(f"Error fetching entity {entity_id}: {e}")
@@ -728,6 +728,9 @@ class WeatherDisplayGenerator:
         # Round to nice values for cleaner display
         plot_min = round(temp_min_actual - padding)
         plot_max = round(temp_max_actual + padding)
+        # Always include 0°C in the range so bars reflect true temperature perspective
+        if temp_min_actual < 0:
+            plot_max = max(plot_max, 0)
         plot_range = plot_max - plot_min
         if plot_range == 0: plot_range = 1
 
@@ -735,13 +738,14 @@ class WeatherDisplayGenerator:
         def temp_to_y(temp):
             return graph_y + graph_height - 2 - (((temp - plot_min) / plot_range) * (graph_height - 4))
 
-        # Check for zero crossing
+        # Always draw zero line when any temperature is below zero
         zero_y = None
-        if plot_min < 0 and plot_max > 0:
+        if plot_min < 0:
             zero_y = temp_to_y(0)
             self.draw.line([(graph_x, zero_y), (graph_x + graph_width, zero_y)], fill=0, width=1)
-            # Add a "0°" label to the left of the zero line for clarity
-            self.draw.text((graph_x - 15, zero_y - 8), "0°", font=font_small, fill=0)
+            # Only add left "0°" label when zero line is in the middle (not at the very top)
+            if plot_max > 0:
+                self.draw.text((graph_x - 15, zero_y - 8), "0°", font=font_small, fill=0)
 
         # Draw temperature labels on the right for the plot's min and max
         self.draw.text((graph_x + graph_width + 5, graph_y - 6), f"{plot_max:.0f}°", font=font_small, fill=0)
